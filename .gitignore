@@ -1,0 +1,41 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build/package output
+build/
+dist/
+*.egg-info/
+
+# Tool/test caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local settings
+.env
+.env.*
+.vscode/
+.idea/
+
+# Generated exporter output
+config.toml
+*.missing_versions.txt
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+
+debug/
+.agents/
+.codex/
+.claude/
+.codex*/
