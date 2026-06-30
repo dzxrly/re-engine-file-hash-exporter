@@ -3,7 +3,6 @@ from __future__ import annotations
 import queue
 import threading
 import traceback
-from datetime import datetime
 from pathlib import Path
 from tkinter import (
     BOTH,
@@ -159,8 +158,8 @@ class ExporterApp:
         self.neighbor_radius_entry = self._labeled_entry(right, "Neighbor radius", self.neighbor_radius)
         self.custom_versions_entry = self._labeled_entry(right, "Custom versions", self.custom_versions)
         self.date_options = Frame(right)
-        self.date_start_entry = self._labeled_entry(self.date_options, "Date from", self.date_start)
-        self.date_end_entry = self._labeled_entry(self.date_options, "Date to", self.date_end)
+        self.date_start_entry = self._labeled_entry(self.date_options, "Date -days", self.date_start)
+        self.date_end_entry = self._labeled_entry(self.date_options, "Date +days", self.date_end)
         self.processes_entry = self._labeled_entry(right, "Processes", self.processes)
 
         self.platform_check = Checkbutton(right, text="Platform suffixes", variable=self.include_platform)
@@ -490,14 +489,14 @@ class ExporterApp:
         if not needs_dates:
             return True
 
-        for label, value in (("Date from", self.date_start.get()), ("Date to", self.date_end.get())):
-            if not value.strip():
-                messagebox.showerror("Missing date range", f"{label} is required for date-based auto detection.")
-                return False
+        for label, value in (("Date -days", self.date_start.get()), ("Date +days", self.date_end.get())):
             try:
-                datetime.strptime(value.strip(), "%Y-%m-%d")
+                days = int(value.strip() or 0)
             except ValueError:
-                messagebox.showerror("Invalid date range", f"{label} must use YYYY-MM-DD format.")
+                messagebox.showerror("Invalid date range", f"{label} must be a non-negative integer.")
+                return False
+            if days < 0:
+                messagebox.showerror("Invalid date range", f"{label} must be a non-negative integer.")
                 return False
         return True
 

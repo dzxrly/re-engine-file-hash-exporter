@@ -8,6 +8,7 @@ from typing import Any
 from .models import BruteForceOptions, SuffixCounts
 
 PROFILE_FILE_NAME = "file_suffix_profiles.json"
+MIN_DATE_CODE_DATE = date(2000, 1, 1)
 
 
 def profile_file_candidates() -> list[Path]:
@@ -35,14 +36,7 @@ def load_version_profiles() -> dict[str, dict[str, Any]]:
 
 
 def default_date_range() -> tuple[str, str]:
-    profiles = load_version_profiles()
-    for profile in profiles.values():
-        if _profile_suffix_type(profile) == "date_code":
-            start = str(profile.get("default_date_start", "")).strip()
-            end = str(profile.get("default_date_end", start)).strip()
-            if start and end:
-                return start, end
-    return "", ""
+    return "0", "0"
 
 
 def extension_uses_date_profile(extension: str, profiles: dict[str, dict[str, Any]] | None = None) -> bool:
@@ -88,12 +82,12 @@ def describe_auto_profile(extension: str, profiles: dict[str, dict[str, Any]]) -
     if profile is None:
         return "no preset, numeric Min/Max fallback"
     if suffix_type == "date_code":
-        return "date_code priority preset"
+        return "date_code priority range preset"
     if suffix_type == "exact":
         return "legacy exact-as-priority preset"
     if suffix_type == "adaptive":
         return "adaptive preset"
-    return "numeric priority preset"
+    return "numeric priority range preset"
 
 
 def _normalize_extension(extension: str) -> str:
@@ -107,9 +101,17 @@ def _profile_suffix_type(profile: dict[str, Any] | None) -> str:
 
 
 def _range_versions(options: BruteForceOptions, priority_versions: list[int] | None = None) -> list[int]:
-    start = max(0, int(options.min_version))
-    end = max(start, int(options.max_version))
-    priority = [version for version in priority_versions or [] if start <= version <= end]
+    priority = _ordered_unique(priority_versions or [])
+    if priority:
+        lower_delta = max(0, int(options.min_version))
+        upper_delta = max(0, int(options.max_version))
+        start = max(0, min(priority) - lower_delta)
+        end = max(start, max(priority) + upper_delta)
+    else:
+        start = max(0, int(options.min_version))
+        end = max(start, int(options.max_version))
+
+    priority = [version for version in priority if start <= version <= end]
     return _ordered_unique([*priority, *range(start, end + 1)])
 
 
@@ -130,39 +132,83 @@ def _date_code_versions(profile: dict[str, Any], options: BruteForceOptions) -> 
     if str(profile.get("date_format", "YYMMDD")).upper() != "YYMMDD":
         raise ValueError("Only YYMMDD date_code profiles are currently supported.")
 
-    start_date = _parse_date_option(options.date_start, "Date from")
-    end_date = _parse_date_option(options.date_end, "Date to")
-    if end_date < start_date:
-        start_date, end_date = end_date, start_date
+    base_dates = _priority_dates(profile)
+    if base_dates:
+        lower_delta = _parse_day_offset(options.date_start, "Date -days")
+        upper_delta = _parse_day_offset(options.date_end, "Date +days")
+        start_date = max(MIN_DATE_CODE_DATE, min(base_dates) - timedelta(days=lower_delta))
+        end_date = max(start_date, max(base_dates) + timedelta(days=upper_delta))
+    else:
+        start_date, end_date = _legacy_date_range(profile, options)
 
     tail_width = int(profile.get("tail_width", 3))
     all_tails = list(range(0, 10**tail_width))
     priority_tails = [tail for tail in _priority_tails(profile) if 0 <= tail < 10**tail_width]
     remainder_tails = [tail for tail in all_tails if tail not in set(priority_tails)]
     tail_phases = [priority_tails, remainder_tails] if priority_tails else [all_tails]
+    all_dates = _date_range(start_date, end_date)
+    priority_dates = [current for current in base_dates if start_date <= current <= end_date]
+    remainder_dates = [current for current in all_dates if current not in set(priority_dates)]
+    date_phases = [priority_dates, remainder_dates] if priority_dates else [all_dates]
+
+    values: list[int] = []
+    for dates in date_phases:
+        for tails in tail_phases:
+            for current in dates:
+                date_prefix = current.strftime("%y%m%d")
+                for tail in tails:
+                    values.append(int(f"{date_prefix}{tail:0{tail_width}d}"))
+    return _ordered_unique(values)
+
+
+def _date_range(start_date: date, end_date: date) -> list[date]:
     dates: list[date] = []
     current = start_date
     while current <= end_date:
         dates.append(current)
         current += timedelta(days=1)
+    return dates
 
-    values: list[int] = []
-    for tails in tail_phases:
-        for current in dates:
-            date_prefix = current.strftime("%y%m%d")
-            for tail in tails:
-                values.append(int(f"{date_prefix}{tail:0{tail_width}d}"))
-    return _ordered_unique(values)
+
+def _legacy_date_range(profile: dict[str, Any], options: BruteForceOptions) -> tuple[date, date]:
+    start_text = str(profile.get("default_date_start", "")).strip()
+    end_text = str(profile.get("default_date_end", start_text)).strip()
+    if start_text and end_text:
+        start_date = _parse_date_value(start_text, "default_date_start")
+        end_date = _parse_date_value(end_text, "default_date_end")
+    else:
+        start_date = _parse_date_option(options.date_start, "Date from")
+        end_date = _parse_date_option(options.date_end, "Date to")
+    if end_date < start_date:
+        start_date, end_date = end_date, start_date
+    return start_date, end_date
 
 
 def _parse_date_option(text: str, label: str) -> date:
     value = text.strip()
     if not value:
         raise ValueError(f"{label} is required for auto_detect date_code profiles.")
+    return _parse_date_value(value, label)
+
+
+def _parse_date_value(value: str, label: str) -> date:
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError as exc:
         raise ValueError(f"{label} must use YYYY-MM-DD format.") from exc
+
+
+def _parse_day_offset(text: str, label: str) -> int:
+    value = text.strip()
+    if not value:
+        return 0
+    try:
+        days = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be a non-negative integer.") from exc
+    if days < 0:
+        raise ValueError(f"{label} must be a non-negative integer.")
+    return days
 
 
 def _priority_versions(profile: dict[str, Any] | None) -> list[int]:
@@ -173,6 +219,17 @@ def _priority_versions(profile: dict[str, Any] | None) -> list[int]:
 
 def _priority_tails(profile: dict[str, Any]) -> list[int]:
     return _unique_ints(profile.get("priority_tails", profile.get("tail_values", [])))
+
+
+def _priority_dates(profile: dict[str, Any]) -> list[date]:
+    values = profile.get("priority_dates", [])
+    if not isinstance(values, list):
+        return []
+    dates: set[date] = set()
+    for value in values:
+        if isinstance(value, str):
+            dates.add(_parse_date_value(value, "priority_dates"))
+    return sorted(dates)
 
 
 def _unique_ints(values: Any) -> list[int]:

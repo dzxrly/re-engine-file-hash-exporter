@@ -79,11 +79,11 @@ natives/STM/<raw_path>.<version>.STM
 - `small_range`：逐个尝试 `Min version` 到 `Max version` 之间的所有版本号，包含两端。默认范围是 `0..4096`。这个模式覆盖最广，但耗时也可能最长。
 - `adaptive`：根据 Step 1 已经从 DMP 中找到的同扩展名已知版本号，按 `Neighbor radius` 向左右扩展。默认半径是 `32`，例如已知版本 `100` 会规划 `68..132`。如果所选扩展名没有任何已知版本，则退回 `Min version..Max version` 范围。
 - `custom`：只尝试 `Custom versions` 中手动填写的版本号。可以用逗号或换行分隔，也可以写范围，例如 `12, 18, 30-40`。程序会去重并排序。这个模式会忽略 `Min version`、`Max version` 和 `Neighbor radius`。
-- `auto_detect`：从项目根目录的 `file_suffix_profiles.json` 读取预设，并按所选扩展名分别规划版本号。`numeric` 类型仍覆盖完整的 `Min version..Max version` 范围，但范围内的 `priority_versions` 会优先尝试。`date_code` 类型使用 `Date from` / `Date to`，先尝试 `priority_tails`，再尝试所选日期下剩余的 `000..999` 尾号。
+- `auto_detect`：从项目根目录的 `file_suffix_profiles.json` 读取预设，并按所选扩展名分别规划版本号。`numeric` 类型把 `priority_versions` 当作基准范围：`Min version` 从预设下界向下扩展，`Max version` 从预设上界向上扩展。例如预设是 `2..38`，`Min version = 10` 且 `Max version = 4096` 时，会搜索 `0..4134`。`date_code` 类型把 `priority_dates` 当作基准日期范围；`Date -days` 向前扩展日期下界，`Date +days` 向后扩展日期上界，并优先尝试 `priority_tails`，再尝试剩余的 `000..999` 尾号。
 
 一般建议：同时搜索多种不同文件类型时，优先试 `auto_detect`；Step 1 已经找到相关已知版本时可试 `adaptive`；需要扫得更广时用 `small_range`；已经知道可能版本号时用 `custom`，速度会更可控。
 
-预设文件使用普通 JSON，方便后续不改代码直接调整。它不会锁定搜索范围，只改变候选顺序；真正的范围仍由 UI 控制。在 `extensions` 下新增或修改扩展名即可：普通数字后缀使用 `suffix_type = "numeric"` 和可选 `priority_versions`，`YYMMDD` 加数字尾号的日期型后缀使用 `suffix_type = "date_code"` 和可选 `priority_tails`。
+预设文件使用普通 JSON，方便后续不改代码直接调整。它提供基准范围和优先值，最终范围由 UI 决定扩展多少。在 `extensions` 下新增或修改扩展名即可：普通数字后缀使用 `suffix_type = "numeric"` 和可选 `priority_versions`，`YYMMDD` 加数字尾号的日期型后缀使用 `suffix_type = "date_code"` 和可选 `priority_dates`、`priority_tails`。
 
 ## GPU Batch Size
 
