@@ -39,6 +39,8 @@ LANGUAGES: list[str] = [
 DEFAULT_PREFIXES: list[str] = ["natives/STM/"]
 DEFAULT_PLATFORM_SUFFIXES: list[str] = ["X64", "STM"]
 
+IGNORED_RESOURCE_EXTENSIONS: set[str] = {"exe"}
+
 TAG_SUFFIXES: set[str] = {language.lower() for language in LANGUAGES} | {
     "x64",
     "stm",

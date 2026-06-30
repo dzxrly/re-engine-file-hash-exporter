@@ -6,6 +6,7 @@ from pathlib import Path
 from .constants import (
     DEFAULT_PLATFORM_SUFFIXES,
     DEFAULT_PREFIXES,
+    IGNORED_RESOURCE_EXTENSIONS,
     LANGUAGES,
     MISSING_REPORT_SUFFIX,
 )
@@ -24,7 +25,7 @@ def versions_as_sorted_lists(suffix_counts: SuffixCounts) -> dict[str, list[int]
     return {
         extension: sorted(versions)
         for extension, versions in sorted(suffix_counts.items())
-        if versions
+        if versions and extension.lower() not in IGNORED_RESOURCE_EXTENSIONS
     }
 
 
@@ -82,6 +83,11 @@ def default_missing_report_path(output_path: Path) -> Path:
 
 
 def build_missing_report(scan: DmpScanResult) -> str:
+    unversioned_paths = {
+        extension: paths
+        for extension, paths in scan.unversioned_paths.items()
+        if extension.lower() not in IGNORED_RESOURCE_EXTENSIONS
+    }
     lines = [
         "# Missing resource suffix versions",
         "",
@@ -98,24 +104,26 @@ def build_missing_report(scan: DmpScanResult) -> str:
         ]
     )
 
-    if not scan.unversioned_paths:
+    if not unversioned_paths:
         lines.append("No unversioned resource paths were found.")
         return "\n".join(lines) + "\n"
 
+    occurrence_count = sum(sum(paths.values()) for paths in unversioned_paths.values())
+    unique_path_count = sum(len(paths) for paths in unversioned_paths.values())
     lines.extend(
         [
-            f"Total occurrences: {scan.unversioned_occurrence_count}",
-            f"Unique paths: {scan.unversioned_unique_path_count}",
-            f"Extensions: {scan.unversioned_extension_count}",
+            f"Total occurrences: {occurrence_count}",
+            f"Unique paths: {unique_path_count}",
+            f"Extensions: {len(unversioned_paths)}",
             "",
             "extension\toccurrences\tunique_paths",
         ]
     )
-    for extension, paths in sorted(scan.unversioned_paths.items()):
+    for extension, paths in sorted(unversioned_paths.items()):
         lines.append(f"{extension}\t{sum(paths.values())}\t{len(paths)}")
 
     lines.extend(["", "Detailed missing paths:", ""])
-    for extension, paths in sorted(scan.unversioned_paths.items()):
+    for extension, paths in sorted(unversioned_paths.items()):
         lines.append(f"[{extension}] occurrences={sum(paths.values())} unique_paths={len(paths)}")
         for path, count in paths.most_common():
             lines.append(f"{count}\t{path}")

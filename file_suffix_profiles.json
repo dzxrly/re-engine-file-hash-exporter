@@ -847,9 +847,6 @@
         5965300
       ]
     },
-    "exe": {
-      "suffix_type": "numeric"
-    },
     "fbik": {
       "suffix_type": "numeric",
       "priority_versions": [

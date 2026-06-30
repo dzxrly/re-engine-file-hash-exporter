@@ -27,6 +27,7 @@ from tkinter import (
 )
 from tkinter import ttk
 
+from ..core.constants import IGNORED_RESOURCE_EXTENSIONS
 from ..core.models import BruteForceOptions, DmpScanResult
 from ..core.version_profiles import any_extension_uses_date_profile, default_date_range
 from ..core.workflow import ExportWorkflow
@@ -388,7 +389,9 @@ class ExporterApp:
         selected = []
         for index in self.missing_exts.curselection():
             text = self.missing_exts.get(index)
-            selected.append(text.split()[0].lstrip("."))
+            extension = text.split()[0].lstrip(".").lower()
+            if extension not in IGNORED_RESOURCE_EXTENSIONS:
+                selected.append(extension)
         return selected
 
     def _format_extension_item(self, extension: str, scan: DmpScanResult) -> str:
@@ -413,9 +416,17 @@ class ExporterApp:
             if self.last_scan is None:
                 return
 
-            extensions = set(self.last_scan.unversioned_paths)
+            extensions = {
+                extension
+                for extension in self.last_scan.unversioned_paths
+                if extension.lower() not in IGNORED_RESOURCE_EXTENSIONS
+            }
             if self.show_versioned_extensions.get():
-                extensions.update(self.last_scan.versioned_paths)
+                extensions.update(
+                    extension
+                    for extension in self.last_scan.versioned_paths
+                    if extension.lower() not in IGNORED_RESOURCE_EXTENSIONS
+                )
 
             for extension in sorted(extensions):
                 self.missing_exts.insert(END, self._format_extension_item(extension, self.last_scan))

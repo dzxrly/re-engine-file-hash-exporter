@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .constants import IGNORED_RESOURCE_EXTENSIONS
 from .models import BruteForceOptions, SuffixCounts
 
 PROFILE_FILE_NAME = "file_suffix_profiles.json"
@@ -31,6 +32,7 @@ def load_version_profiles() -> dict[str, dict[str, Any]]:
                 str(extension).lower().lstrip("."): profile
                 for extension, profile in extensions.items()
                 if isinstance(profile, dict)
+                and str(extension).lower().lstrip(".") not in IGNORED_RESOURCE_EXTENSIONS
             }
     return {}
 

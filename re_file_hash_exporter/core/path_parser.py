@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .constants import DEFAULT_PREFIXES, RESOURCE_PATH_PREFIXES, TAG_SUFFIXES
+from .constants import DEFAULT_PREFIXES, IGNORED_RESOURCE_EXTENSIONS, RESOURCE_PATH_PREFIXES, TAG_SUFFIXES
 
 _VALID_EXTENSION_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
@@ -34,6 +34,10 @@ def valid_extension(extension: str) -> bool:
     return _VALID_EXTENSION_RE.fullmatch(extension) is not None
 
 
+def is_ignored_extension(extension: str) -> bool:
+    return extension.lower() in IGNORED_RESOURCE_EXTENSIONS
+
+
 def strip_known_tail_tags(parts: list[str]) -> list[str]:
     parts = list(parts)
     while parts and parts[-1].lower() in TAG_SUFFIXES:
@@ -54,12 +58,14 @@ def resource_suffix_from_path(path: str) -> tuple[tuple[str, int] | None, tuple[
     if len(parts) >= 3:
         version = parts[-1]
         extension = parts[-2]
-        if version.isdigit() and valid_extension(extension):
-            return (extension.lower(), int(version)), None
+        extension = extension.lower()
+        if version.isdigit() and valid_extension(extension) and not is_ignored_extension(extension):
+            return (extension, int(version)), None
 
     extension = parts[-1]
-    if valid_extension(extension):
-        return None, (extension.lower(), normalized)
+    extension = extension.lower()
+    if valid_extension(extension) and not is_ignored_extension(extension):
+        return None, (extension, normalized)
 
     return None, None
 
@@ -76,11 +82,12 @@ def versioned_raw_path_from_path(path: str) -> tuple[str, int, str] | None:
 
     version = parts[-1]
     extension = parts[-2]
-    if not version.isdigit() or not valid_extension(extension):
+    extension = extension.lower()
+    if not version.isdigit() or not valid_extension(extension) or is_ignored_extension(extension):
         return None
 
     raw_tail = ".".join(parts[:-1])
-    return extension.lower(), int(version), f"{parent}/{raw_tail}"
+    return extension, int(version), f"{parent}/{raw_tail}"
 
 
 def looks_like_game_resource_path(path: str) -> bool:
@@ -123,7 +130,10 @@ def extension_from_raw_path(path: str) -> str | None:
     if "." not in tail:
         return None
     ext = tail.rsplit(".", 1)[1]
-    return ext.lower() if valid_extension(ext) else None
+    ext = ext.lower()
+    if not valid_extension(ext) or is_ignored_extension(ext):
+        return None
+    return ext
 
 
 def extract_versioned_suffix(path: str) -> tuple[str, int] | None:

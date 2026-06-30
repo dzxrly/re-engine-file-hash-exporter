@@ -8,7 +8,7 @@ from multiprocessing import Manager
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .constants import DEFAULT_PLATFORM_SUFFIXES, DEFAULT_PREFIXES, LANGUAGES
+from .constants import DEFAULT_PLATFORM_SUFFIXES, DEFAULT_PREFIXES, IGNORED_RESOURCE_EXTENSIONS, LANGUAGES
 from .gpu_torch import match_extension_with_torch, torch_cuda_status
 from .hash_utf16 import hash_mixed
 from .models import BruteForceMatch, BruteForceOptions, BruteForceResult, DmpScanResult, SuffixCounts
@@ -73,9 +73,11 @@ def collect_raw_paths_by_extension(
     selected: Iterable[str],
     include_versioned_extensions: bool = False,
 ) -> dict[str, list[str]]:
-    selected_set = {ext.lower() for ext in selected}
+    selected_set = {ext.lower() for ext in selected if ext.lower() not in IGNORED_RESOURCE_EXTENSIONS}
     out: dict[str, set[str]] = {}
     for extension, paths in scan.unversioned_paths.items():
+        if extension.lower() in IGNORED_RESOURCE_EXTENSIONS:
+            continue
         if extension.lower() not in selected_set:
             continue
         raw_paths = {raw_path_from_reference(path) for path in paths}
@@ -83,6 +85,8 @@ def collect_raw_paths_by_extension(
 
     if include_versioned_extensions:
         for extension, paths in scan.versioned_paths.items():
+            if extension.lower() in IGNORED_RESOURCE_EXTENSIONS:
+                continue
             if extension.lower() not in selected_set:
                 continue
             raw_paths = {raw_path_from_reference(path) for path in paths}
