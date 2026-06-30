@@ -56,6 +56,8 @@ class BruteForceOptions:
     mode: str = "small_range"
     custom_versions: str = ""
     neighbor_radius: int = 32
+    date_start: str = ""
+    date_end: str = ""
     processes: int = 0
     include_platform_suffixes: bool = True
     include_languages: bool = True

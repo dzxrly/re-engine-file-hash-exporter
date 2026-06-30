@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 import traceback
+from datetime import datetime
 from pathlib import Path
 from tkinter import (
     BOTH,
@@ -28,6 +29,7 @@ from tkinter import (
 from tkinter import ttk
 
 from ..core.models import BruteForceOptions, DmpScanResult
+from ..core.version_profiles import any_extension_uses_date_profile, default_date_range
 from ..core.workflow import ExportWorkflow
 
 
@@ -50,6 +52,9 @@ class ExporterApp:
         self.max_version = StringVar(value="4096")
         self.custom_versions = StringVar(value="")
         self.neighbor_radius = StringVar(value="32")
+        default_date_start, default_date_end = self._default_date_range()
+        self.date_start = StringVar(value=default_date_start)
+        self.date_end = StringVar(value=default_date_end)
         self.include_platform = BooleanVar(value=True)
         self.include_languages = BooleanVar(value=True)
         self.include_streaming = BooleanVar(value=True)
@@ -61,6 +66,7 @@ class ExporterApp:
 
         self._build()
         self._toggle_gpu_options()
+        self._toggle_date_options()
         self._set_step2_enabled(False)
         self.root.after(100, self._poll_events)
 
@@ -141,16 +147,20 @@ class ExporterApp:
         self.mode_combo = ttk.Combobox(
             right,
             textvariable=self.mode,
-            values=["small_range", "adaptive", "custom"],
+            values=["small_range", "adaptive", "custom", "auto_detect"],
             state="readonly",
             width=18,
         )
+        self.mode_combo.bind("<<ComboboxSelected>>", self._on_mode_changed)
         self.mode_combo.pack(anchor="w", pady=(0, 6))
 
         self.min_version_entry = self._labeled_entry(right, "Min version", self.min_version)
         self.max_version_entry = self._labeled_entry(right, "Max version", self.max_version)
         self.neighbor_radius_entry = self._labeled_entry(right, "Neighbor radius", self.neighbor_radius)
         self.custom_versions_entry = self._labeled_entry(right, "Custom versions", self.custom_versions)
+        self.date_options = Frame(right)
+        self.date_start_entry = self._labeled_entry(self.date_options, "Date from", self.date_start)
+        self.date_end_entry = self._labeled_entry(self.date_options, "Date to", self.date_end)
         self.processes_entry = self._labeled_entry(right, "Processes", self.processes)
 
         self.platform_check = Checkbutton(right, text="Platform suffixes", variable=self.include_platform)
@@ -187,6 +197,21 @@ class ExporterApp:
         entry.pack(side=RIGHT)
         return entry
 
+    def _default_date_range(self) -> tuple[str, str]:
+        try:
+            return default_date_range()
+        except Exception:
+            return "", ""
+
+    def _on_mode_changed(self, _event=None) -> None:
+        self._toggle_date_options()
+
+    def _toggle_date_options(self) -> None:
+        if self.mode.get() == "auto_detect":
+            self.date_options.pack(fill="x", pady=(2, 0), before=self.processes_entry.master)
+        else:
+            self.date_options.pack_forget()
+
     def _toggle_gpu_options(self) -> None:
         if self.request_gpu.get():
             self.gpu_options.pack(fill="x", pady=(2, 0), before=self.step2_button)
@@ -218,6 +243,8 @@ class ExporterApp:
             self.max_version_entry,
             self.neighbor_radius_entry,
             self.custom_versions_entry,
+            self.date_start_entry,
+            self.date_end_entry,
             self.processes_entry,
             self.platform_check,
             self.languages_check,
@@ -407,6 +434,8 @@ class ExporterApp:
         if not selected:
             messagebox.showerror("Missing extensions", "Select one or more extensions.")
             return
+        if not self._validate_auto_detect_date_options(selected):
+            return
 
         output = Path(self.output_path.get().strip())
         gpu_batch_size = 16384
@@ -427,6 +456,8 @@ class ExporterApp:
             mode=self.mode.get(),
             custom_versions=self.custom_versions.get(),
             neighbor_radius=int(self.neighbor_radius.get() or 32),
+            date_start=self.date_start.get().strip(),
+            date_end=self.date_end.get().strip(),
             processes=int(self.processes.get() or 0),
             include_platform_suffixes=self.include_platform.get(),
             include_languages=self.include_languages.get(),
@@ -447,6 +478,28 @@ class ExporterApp:
             self.events.put(("brute", result))
 
         self._run_in_worker(task, "step2")
+
+    def _validate_auto_detect_date_options(self, selected: list[str]) -> bool:
+        if self.mode.get() != "auto_detect":
+            return True
+        try:
+            needs_dates = any_extension_uses_date_profile(selected)
+        except Exception as err:
+            messagebox.showerror("Invalid profile config", str(err))
+            return False
+        if not needs_dates:
+            return True
+
+        for label, value in (("Date from", self.date_start.get()), ("Date to", self.date_end.get())):
+            if not value.strip():
+                messagebox.showerror("Missing date range", f"{label} is required for date-based auto detection.")
+                return False
+            try:
+                datetime.strptime(value.strip(), "%Y-%m-%d")
+            except ValueError:
+                messagebox.showerror("Invalid date range", f"{label} must use YYYY-MM-DD format.")
+                return False
+        return True
 
     def _thread_log(self, message: str) -> None:
         self.events.put(("log", message))

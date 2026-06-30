@@ -12,6 +12,7 @@
 - 第一步导出 DMP 中已经带数字后缀的 `suffix_map`。
 - 将 DMP 中只有 `name.ext`、没有 `.version` 的 raw path 按扩展名汇总并提示。
 - 第二步允许手动选择缺失扩展名，并暴力搜索候选版本号后缀。
+- 提供 `auto_detect` 候选规划模式，可从根目录 `file_suffix_profiles.json` 读取可编辑预设。
 - 第二步可选显示已经存在后缀的扩展名，用于继续搜索可能新增的版本后缀。
 - 暴力匹配只读取 PAK 元数据 hash，不解包 PAK 内容。
 - 支持批量添加多个 PAK 文件。
@@ -70,6 +71,19 @@ natives/STM/<raw_path>.<version>.STM
 ```
 
 随后工具会计算每个候选路径的 RE Engine mixed UTF-16 hash，并与从 PAK entry table 读取到的 hash 集合进行匹配。匹配成功后，版本号会合并回 `suffix_map`，并重新保存 `config.toml`。
+
+## 候选模式
+
+`Candidate mode` 只控制 Step 2 如何生成 `<raw_path>.<version>` 里的候选版本号列表。平台后缀、语言后缀、`streaming/` 路径等路径变体仍由旁边的复选框控制。
+
+- `small_range`：逐个尝试 `Min version` 到 `Max version` 之间的所有版本号，包含两端。默认范围是 `0..4096`。这个模式覆盖最广，但耗时也可能最长。
+- `adaptive`：根据 Step 1 已经从 DMP 中找到的同扩展名已知版本号，按 `Neighbor radius` 向左右扩展。默认半径是 `32`，例如已知版本 `100` 会规划 `68..132`。如果所选扩展名没有任何已知版本，则退回 `Min version..Max version` 范围。
+- `custom`：只尝试 `Custom versions` 中手动填写的版本号。可以用逗号或换行分隔，也可以写范围，例如 `12, 18, 30-40`。程序会去重并排序。这个模式会忽略 `Min version`、`Max version` 和 `Neighbor radius`。
+- `auto_detect`：从项目根目录的 `file_suffix_profiles.json` 读取预设，并按所选扩展名分别规划版本号。`numeric` 类型仍覆盖完整的 `Min version..Max version` 范围，但范围内的 `priority_versions` 会优先尝试。`date_code` 类型使用 `Date from` / `Date to`，先尝试 `priority_tails`，再尝试所选日期下剩余的 `000..999` 尾号。
+
+一般建议：同时搜索多种不同文件类型时，优先试 `auto_detect`；Step 1 已经找到相关已知版本时可试 `adaptive`；需要扫得更广时用 `small_range`；已经知道可能版本号时用 `custom`，速度会更可控。
+
+预设文件使用普通 JSON，方便后续不改代码直接调整。它不会锁定搜索范围，只改变候选顺序；真正的范围仍由 UI 控制。在 `extensions` 下新增或修改扩展名即可：普通数字后缀使用 `suffix_type = "numeric"` 和可选 `priority_versions`，`YYMMDD` 加数字尾号的日期型后缀使用 `suffix_type = "date_code"` 和可选 `priority_tails`。
 
 ## GPU Batch Size
 

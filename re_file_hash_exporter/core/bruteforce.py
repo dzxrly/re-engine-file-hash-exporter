@@ -14,6 +14,7 @@ from .hash_utf16 import hash_mixed
 from .models import BruteForceMatch, BruteForceOptions, BruteForceResult, DmpScanResult, SuffixCounts
 from .pak_hash import load_hashes_from_paks
 from .path_parser import raw_path_from_reference
+from .version_profiles import describe_auto_profile, load_version_profiles, plan_auto_detect_versions
 
 ProgressCallback = Callable[[str], None]
 CancelCallback = Callable[[], bool]
@@ -44,9 +45,14 @@ def plan_versions_for_extension(
     extension: str,
     known_suffixes: SuffixCounts,
     options: BruteForceOptions,
+    auto_profiles: dict | None = None,
 ) -> list[int]:
     if options.mode == "custom":
         return parse_custom_versions(options.custom_versions)
+
+    if options.mode == "auto_detect":
+        profiles = auto_profiles if auto_profiles is not None else load_version_profiles()
+        return plan_auto_detect_versions(extension, known_suffixes, options, profiles)
 
     if options.mode == "adaptive":
         values: set[int] = set()
@@ -221,6 +227,7 @@ def brute_force_suffixes(
     processes = options.processes if options.processes and options.processes > 0 else os.cpu_count() or 1
     processes = max(1, processes)
     result = BruteForceResult(warnings=warnings)
+    auto_profiles = load_version_profiles() if options.mode == "auto_detect" else {}
 
     for extension, raw_paths in raw_by_ext.items():
         if stopped():
@@ -229,17 +236,19 @@ def brute_force_suffixes(
                 progress("Stop requested. Brute-force search cancelled.")
             return result
 
-        versions = plan_versions_for_extension(extension, known_suffixes, options)
+        versions = plan_versions_for_extension(extension, known_suffixes, options, auto_profiles)
         if not versions:
             result.warnings.append(f"No candidate versions planned for {extension}.")
             continue
+        if options.mode == "auto_detect" and progress:
+            progress(f".{extension}: auto_detect using {describe_auto_profile(extension, auto_profiles)}.")
 
         if use_gpu:
             if progress:
                 progress(
                     f"Brute matching .{extension}: {len(raw_paths)} raw paths x {len(versions)} versions using torch CUDA."
                 )
-                progress(f".{extension}: version candidates {versions[0]}..{versions[-1]} ({len(versions)} total).")
+                progress(f".{extension}: version candidates {_format_candidate_range(versions)} ({len(versions)} total).")
             try:
                 gpu_matches, cancelled = match_extension_with_torch(
                     extension=extension,
@@ -279,7 +288,7 @@ def brute_force_suffixes(
             progress(
                 f"Brute matching .{extension}: {len(raw_paths)} raw paths x {len(versions)} versions using {processes} processes."
             )
-            progress(f".{extension}: version candidates {versions[0]}..{versions[-1]} ({len(versions)} total).")
+            progress(f".{extension}: version candidates {_format_candidate_range(versions)} ({len(versions)} total).")
 
         chunk_size = max(1, min(64, len(raw_paths) // (processes * 2) + 1))
         tasks = [
@@ -407,3 +416,13 @@ def _format_version_progress(min_version: int | None, max_version: int | None) -
     if min_version == max_version:
         return f"version {min_version}"
     return f"versions {min_version}..{max_version}"
+
+
+def _format_candidate_range(versions: list[int]) -> str:
+    if not versions:
+        return "none"
+    low = min(versions)
+    high = max(versions)
+    if low == high:
+        return str(low)
+    return f"{low}..{high}"

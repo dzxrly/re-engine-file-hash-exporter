@@ -12,6 +12,7 @@ It scans resource paths from a selected `.DMP` file, exports known versioned suf
 - Export the first-step `suffix_map` for paths that already contain numeric suffixes in the DMP.
 - Group and report raw paths such as `name.ext` that do not include `.version`.
 - Let the user select missing extensions and brute-force candidate version suffixes.
+- Provide `auto_detect` candidate planning from editable presets in `file_suffix_profiles.json`.
 - Optionally show already versioned extensions in Step 2 so they can be searched for additional suffix versions.
 - Match candidates against PAK metadata hashes without unpacking PAK content.
 - Support multiple PAK files.
@@ -70,6 +71,19 @@ natives/STM/<raw_path>.<version>.STM
 ```
 
 The tool computes the RE Engine mixed UTF-16 hash for each candidate and compares it with the hash set read from the PAK entry tables. Successful matches are merged into `suffix_map`, then `config.toml` is saved again.
+
+## Candidate Modes
+
+`Candidate mode` controls only how Step 2 builds the candidate version-number list used in `<raw_path>.<version>`. Path variants such as platform suffixes, language suffixes, and `streaming/` paths are still controlled by the checkboxes beside it.
+
+- `small_range`: tries every version from `Min version` to `Max version`, inclusive. The default range is `0..4096`. This is the broadest option, but it can take the longest.
+- `adaptive`: uses known suffix versions found by Step 1 for the same extension, then expands around each known version by `Neighbor radius`. With the default radius `32`, a known version `100` plans `68..132`. If the selected extension has no known version, it falls back to the `Min version..Max version` range.
+- `custom`: tries only the values entered in `Custom versions`. Use commas or new lines to separate values, and use ranges such as `12, 18, 30-40`. The values are deduplicated and sorted. In this mode, `Min version`, `Max version`, and `Neighbor radius` are ignored.
+- `auto_detect`: reads `file_suffix_profiles.json` from the project root and plans versions per selected extension. `numeric` profiles use the full `Min version..Max version` range, but try `priority_versions` first when they are inside that range. `date_code` profiles use `Date from` / `Date to`, try `priority_tails` first, then try the remaining `000..999` tails for each selected date.
+
+As a rule of thumb, start with `auto_detect` when searching several different file types, use `adaptive` when Step 1 has found related known versions, use `small_range` when you need a broader search, and use `custom` when you already know the likely version numbers.
+
+The preset file is intentionally plain JSON so it can be tuned without code changes. It does not lock the search range; it only changes candidate order. Add or edit entries under `extensions`; use `suffix_type = "numeric"` with optional `priority_versions`, or `suffix_type = "date_code"` with optional `priority_tails`.
 
 ## GPU Batch Size
 
