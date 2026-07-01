@@ -74,7 +74,7 @@ The tool computes the RE Engine mixed UTF-16 hash for each candidate and compare
 
 ## Candidate Modes
 
-`Candidate mode` controls only how Step 2 builds the candidate version-number list used in `<raw_path>.<version>`. Path variants such as platform suffixes, language suffixes, and `streaming/` paths are still controlled by the checkboxes beside it.
+`Candidate mode` controls only how Step 2 builds the candidate version-number list used in `<raw_path>.<version>`. Path variants are controlled separately by `Platform suffixes`, `Languages`, and `Streaming variants`.
 
 - `small_range`: tries every version from `Min version` to `Max version`, inclusive. The default range is `0..4096`. This is the broadest option, but it can take the longest.
 - `adaptive`: uses known suffix versions found by Step 1 for the same extension, then expands around each known version by `Neighbor radius`. With the default radius `32`, a known version `100` plans `68..132`. If the selected extension has no known version, it falls back to the `Min version..Max version` range.
@@ -83,7 +83,15 @@ The tool computes the RE Engine mixed UTF-16 hash for each candidate and compare
 
 As a rule of thumb, start with `auto_detect` when searching several different file types, use `adaptive` when Step 1 has found related known versions, use `small_range` when you need a broader search, and use `custom` when you already know the likely version numbers.
 
-The preset file is intentionally plain JSON so it can be tuned without code changes. It defines baseline ranges and priority values, while the UI controls how far those ranges expand. Add or edit entries under `extensions`; use `suffix_type = "numeric"` with optional `priority_versions`, or `suffix_type = "date_code"` with optional `priority_dates` and `priority_tails`.
+## Language Modes
+
+`Languages` controls whether Step 2 adds `.Ja`, `.En`, `.ZhCN`, and other language suffix variants.
+
+- `localized`: the default. Language suffixes are generated only for likely localized resources: extensions marked with `"language_search": true` in `file_suffix_profiles.json`, built-in localized extensions such as `.msg`, `.asrc`, `.bnk`, `.pck`, `.sbnk`, and `.spck`, or raw paths containing localization-style folders such as `/message/`, `/text/`, `/subtitle/`, `/voice`, `/dialog/`, or `/localization/`.
+- `off`: never generates language suffix variants.
+- `all`: generates language suffix variants for every selected path, matching the older broad-search behavior.
+
+The preset file is intentionally plain JSON so it can be tuned without code changes. It defines baseline ranges and priority values, while the UI controls how far those ranges expand. Add or edit entries under `extensions`; use `suffix_type = "numeric"` with optional `priority_versions`, or `suffix_type = "date_code"` with optional `priority_dates` and `priority_tails`. Add `"language_search": true` only for file types whose paths commonly use RE Engine language suffixes.
 
 ## GPU Batch Size
 

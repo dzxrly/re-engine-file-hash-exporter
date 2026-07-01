@@ -578,6 +578,7 @@
     },
     "asrc": {
       "suffix_type": "numeric",
+      "language_search": true,
       "priority_versions": [
         14,
         21,
@@ -603,6 +604,7 @@
     },
     "bnk": {
       "suffix_type": "numeric",
+      "language_search": true,
       "priority_versions": [
         2
       ]
@@ -1516,6 +1518,7 @@
     },
     "msg": {
       "suffix_type": "numeric",
+      "language_search": true,
       "priority_versions": [
         12,
         14,
@@ -1603,6 +1606,7 @@
     },
     "pck": {
       "suffix_type": "numeric",
+      "language_search": true,
       "priority_versions": [
         3
       ]
@@ -1780,6 +1784,7 @@
     },
     "sbnk": {
       "suffix_type": "numeric",
+      "language_search": true,
       "priority_versions": [
         1
       ]
@@ -1834,6 +1839,7 @@
     },
     "spck": {
       "suffix_type": "numeric",
+      "language_search": true,
       "priority_versions": [
         1
       ]

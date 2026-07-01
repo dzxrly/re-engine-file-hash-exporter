@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Callable, Iterable
 
-from .constants import DEFAULT_PLATFORM_SUFFIXES, DEFAULT_PREFIXES, LANGUAGES
+from .candidates import candidate_count, iter_candidate_parts, join_candidate_parts
 
 ProgressCallback = Callable[[str], None]
 CancelCallback = Callable[[], bool]
@@ -31,6 +31,23 @@ def torch_cuda_status() -> tuple[bool, str]:
 
     name = torch.cuda.get_device_name(0)
     return True, f"torch CUDA backend ready: {name}"
+
+
+def release_torch_cuda_cache() -> None:
+    try:
+        import torch
+    except Exception:
+        return
+
+    _release_device_cache(torch, "cuda")
+
+
+def _release_device_cache(torch, device: str) -> None:
+    try:
+        if str(device).lower().startswith("cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        return
 
 
 def _u32(torch, value):
@@ -67,12 +84,10 @@ def _hash_units_case(torch, units, lengths, uppercase: bool):
 
     state = torch.full((units.shape[0],), MASK32, dtype=torch.int64, device=units.device)
     pair_count = units.shape[1] // 2
-    positions = torch.arange(units.shape[0], dtype=torch.int64, device=units.device)
-    del positions
 
     for pair_index in range(pair_count):
-        left = converted[:, pair_index * 2]
-        right = converted[:, pair_index * 2 + 1]
+        left = converted[:, pair_index * 2].to(torch.int64)
+        right = converted[:, pair_index * 2 + 1].to(torch.int64)
         active = lengths >= (pair_index * 2 + 2)
         k = torch.bitwise_or(left, right << 16)
         next_state = torch.bitwise_xor(state, _murmur3_calc_k(torch, k))
@@ -83,14 +98,14 @@ def _hash_units_case(torch, units, lengths, uppercase: bool):
     odd = (lengths & 1) == 1
     if bool(odd.any()):
         last_index = torch.clamp(lengths - 1, min=0)
-        tail = converted.gather(1, last_index.view(-1, 1)).view(-1)
+        tail = converted.gather(1, last_index.view(-1, 1).to(torch.int64)).view(-1).to(torch.int64)
         tail_state = torch.bitwise_xor(state, _murmur3_calc_k(torch, tail))
         state = torch.where(odd, tail_state, state)
 
-    return _murmur3_finish(torch, state, lengths * 2)
+    return _murmur3_finish(torch, state, lengths.to(torch.int64) * 2)
 
 
-def hash_mixed_batch(paths: list[str], device: str = "cuda") -> list[int]:
+def hash_mixed_batch(paths: list[str], device: str = "cuda", release_cache: bool = True) -> list[int]:
     import torch
 
     if not paths:
@@ -99,65 +114,45 @@ def hash_mixed_batch(paths: list[str], device: str = "cuda") -> list[int]:
     encoded = [path.encode("utf-16le") for path in paths]
     lengths = [len(data) // 2 for data in encoded]
     max_len = max(lengths)
-    units = torch.zeros((len(paths), max_len), dtype=torch.int64)
-    for row, data in enumerate(encoded):
-        values = [int.from_bytes(data[index : index + 2], "little") for index in range(0, len(data), 2)]
-        if values:
-            units[row, : len(values)] = torch.tensor(values, dtype=torch.int64)
+    units = None
+    length_tensor = None
+    upper = None
+    lower = None
 
-    units = units.to(device, non_blocking=True)
-    length_tensor = torch.tensor(lengths, dtype=torch.int64, device=device)
-    upper = _hash_units_case(torch, units, length_tensor, uppercase=True)
-    lower = _hash_units_case(torch, units, length_tensor, uppercase=False)
+    try:
+        inference_context = getattr(torch, "inference_mode", torch.no_grad)
+        with inference_context():
+            units = torch.zeros((len(paths), max_len), dtype=torch.int32)
+            for row, data in enumerate(encoded):
+                values = [int.from_bytes(data[index : index + 2], "little") for index in range(0, len(data), 2)]
+                if values:
+                    units[row, : len(values)] = torch.tensor(values, dtype=torch.int32)
 
-    upper_values = upper.detach().cpu().tolist()
-    lower_values = lower.detach().cpu().tolist()
-    return [((upper_value & MASK32) << 32) | (lower_value & MASK32) for upper_value, lower_value in zip(upper_values, lower_values)]
+            units = units.to(device, non_blocking=True)
+            length_tensor = torch.tensor(lengths, dtype=torch.int32, device=device)
+            upper = _hash_units_case(torch, units, length_tensor, uppercase=True)
+            lower = _hash_units_case(torch, units, length_tensor, uppercase=False)
 
-
-def _candidate_paths(
-    raw_path: str,
-    version: int,
-    include_platform_suffixes: bool,
-    include_languages: bool,
-    include_streaming: bool,
-):
-    raw_variants = [raw_path]
-    if include_streaming:
-        raw_variants.append(f"streaming/{raw_path}")
-
-    for prefix in DEFAULT_PREFIXES:
-        for raw_variant in raw_variants:
-            base = f"{prefix}{raw_variant}.{version}"
-            bases = [base]
-            if include_platform_suffixes:
-                bases.extend(f"{base}.{suffix}" for suffix in DEFAULT_PLATFORM_SUFFIXES)
-            for full_path in bases:
-                yield full_path
-                if include_languages:
-                    for language in LANGUAGES:
-                        yield f"{full_path}.{language}"
-
-
-def _candidate_count(
-    raw_path_count: int,
-    version_count: int,
-    include_platform_suffixes: bool,
-    include_languages: bool,
-    include_streaming: bool,
-) -> int:
-    raw_variants = 2 if include_streaming else 1
-    base_variants = 1 + (len(DEFAULT_PLATFORM_SUFFIXES) if include_platform_suffixes else 0)
-    language_variants = 1 + (len(LANGUAGES) if include_languages else 0)
-    return raw_path_count * version_count * raw_variants * base_variants * language_variants
+            upper_values = upper.detach().cpu().tolist()
+            lower_values = lower.detach().cpu().tolist()
+            return [
+                ((upper_value & MASK32) << 32) | (lower_value & MASK32)
+                for upper_value, lower_value in zip(upper_values, lower_values)
+            ]
+    finally:
+        del units, length_tensor, upper, lower
+        if release_cache:
+            _release_device_cache(torch, device)
 
 
 def _iter_candidate_batches(
     raw_paths: Iterable[str],
+    extension: str,
     versions: list[int],
     include_platform_suffixes: bool,
-    include_languages: bool,
+    language_mode: str,
     include_streaming: bool,
+    profiles: dict[str, dict] | None,
     batch_size: int,
     cancel_requested: CancelCallback | None,
 ):
@@ -168,14 +163,16 @@ def _iter_candidate_batches(
         for version in versions:
             if cancel_requested and cancel_requested():
                 break
-            for full_path in _candidate_paths(
+            for parts in iter_candidate_parts(
                 raw_path,
+                extension,
                 version,
                 include_platform_suffixes,
-                include_languages,
+                language_mode,
                 include_streaming,
+                profiles,
             ):
-                batch.append((raw_path, version, full_path))
+                batch.append((raw_path, version, join_candidate_parts(parts)))
                 if len(batch) >= batch_size:
                     yield batch
                     batch = []
@@ -189,8 +186,9 @@ def match_extension_with_torch(
     versions: list[int],
     pak_hashes: set[int],
     include_platform_suffixes: bool,
-    include_languages: bool,
+    language_mode: str,
     include_streaming: bool,
+    profiles: dict[str, dict] | None,
     progress: ProgressCallback | None,
     cancel_requested: CancelCallback | None,
     batch_size: int = 16384,
@@ -199,12 +197,14 @@ def match_extension_with_torch(
     if not ok:
         raise RuntimeError(message)
 
-    total_candidates = _candidate_count(
-        len(raw_paths),
+    total_candidates = candidate_count(
+        raw_paths,
+        extension,
         len(versions),
         include_platform_suffixes,
-        include_languages,
+        language_mode,
         include_streaming,
+        profiles,
     )
     total_batches = max(1, math.ceil(total_candidates / batch_size))
     if progress:
@@ -215,43 +215,48 @@ def match_extension_with_torch(
 
     matches: list[tuple[str, int, str]] = []
     seen: set[str] = set()
-    for batch_index, batch in enumerate(
-        _iter_candidate_batches(
-            raw_paths,
-            versions,
-            include_platform_suffixes,
-            include_languages,
-            include_streaming,
-            batch_size,
-            cancel_requested,
-        ),
-        start=1,
-    ):
-        if cancel_requested and cancel_requested():
-            return matches, True
+    try:
+        for batch_index, batch in enumerate(
+            _iter_candidate_batches(
+                raw_paths,
+                extension,
+                versions,
+                include_platform_suffixes,
+                language_mode,
+                include_streaming,
+                profiles,
+                batch_size,
+                cancel_requested,
+            ),
+            start=1,
+        ):
+            if cancel_requested and cancel_requested():
+                return matches, True
 
-        full_paths = [item[2] for item in batch]
-        batch_versions = [item[1] for item in batch]
-        version_text = _format_version_progress(min(batch_versions), max(batch_versions))
-        hashes = hash_mixed_batch(full_paths, device="cuda")
-        batch_matches = []
-        for (raw_path, version, full_path), hash_value in zip(batch, hashes):
-            if hash_value in pak_hashes and full_path not in seen:
-                seen.add(full_path)
-                batch_matches.append((raw_path, version, full_path))
-        matches.extend(batch_matches)
+            full_paths = [item[2] for item in batch]
+            batch_versions = [item[1] for item in batch]
+            version_text = _format_version_progress(min(batch_versions), max(batch_versions))
+            hashes = hash_mixed_batch(full_paths, device="cuda", release_cache=False)
+            batch_matches = []
+            for (raw_path, version, full_path), hash_value in zip(batch, hashes):
+                if hash_value in pak_hashes and full_path not in seen:
+                    seen.add(full_path)
+                    batch_matches.append((raw_path, version, full_path))
+            matches.extend(batch_matches)
 
-        if progress:
-            if batch_matches:
-                progress(
-                    f".{extension}: GPU batch {batch_index}/{total_batches} {version_text} found {len(batch_matches)} match(es)."
-                )
-            else:
-                progress(f".{extension}: GPU batch {batch_index}/{total_batches} {version_text} complete.")
-            for _raw_path, version, full_path in batch_matches:
-                progress(f"MATCH .{extension}.{version} -> {full_path}")
+            if progress:
+                if batch_matches:
+                    progress(
+                        f".{extension}: GPU batch {batch_index}/{total_batches} {version_text} found {len(batch_matches)} match(es)."
+                    )
+                else:
+                    progress(f".{extension}: GPU batch {batch_index}/{total_batches} {version_text} complete.")
+                for _raw_path, version, full_path in batch_matches:
+                    progress(f"MATCH .{extension}.{version} -> {full_path}")
 
-    return matches, bool(cancel_requested and cancel_requested())
+        return matches, bool(cancel_requested and cancel_requested())
+    finally:
+        release_torch_cuda_cache()
 
 
 def _format_version_progress(min_version: int, max_version: int) -> str:

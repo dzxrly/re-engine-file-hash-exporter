@@ -41,6 +41,34 @@ DEFAULT_PLATFORM_SUFFIXES: list[str] = ["X64", "STM"]
 
 IGNORED_RESOURCE_EXTENSIONS: set[str] = {"exe"}
 
+LANGUAGE_MODE_OFF = "off"
+LANGUAGE_MODE_LOCALIZED = "localized"
+LANGUAGE_MODE_ALL = "all"
+LANGUAGE_MODES: tuple[str, ...] = (
+    LANGUAGE_MODE_LOCALIZED,
+    LANGUAGE_MODE_OFF,
+    LANGUAGE_MODE_ALL,
+)
+
+LOCALIZED_RESOURCE_EXTENSIONS: set[str] = {"asrc", "bnk", "msg", "pck", "sbnk", "spck"}
+LOCALIZED_PATH_KEYWORDS: tuple[str, ...] = (
+    "/caption/",
+    "/dialog/",
+    "/dialogue/",
+    "/font/",
+    "/localisation/",
+    "/localise/",
+    "/localization/",
+    "/localize/",
+    "/message/",
+    "/msg/",
+    "/speech/",
+    "/subtitle/",
+    "/text/",
+    "/vo/",
+    "/voice",
+)
+
 TAG_SUFFIXES: set[str] = {language.lower() for language in LANGUAGES} | {
     "x64",
     "stm",

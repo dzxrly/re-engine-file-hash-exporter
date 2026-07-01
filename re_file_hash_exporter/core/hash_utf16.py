@@ -89,6 +89,11 @@ def _utf16_units(value: str) -> list[int]:
     return [int.from_bytes(data[i : i + 2], "little") for i in range(0, len(data), 2)]
 
 
+def _write_text(state: _Murmur3State, value: str, uppercase: bool) -> None:
+    for unit in _utf16_units(value):
+        state.write_u16(_upper_ascii_utf16(unit) if uppercase else _lower_ascii_utf16(unit))
+
+
 def hash_lower_case(value: str) -> int:
     state = _Murmur3State()
     for unit in _utf16_units(value):
@@ -109,4 +114,13 @@ def hash_mixed(value: str) -> int:
     for unit in _utf16_units(value):
         upper.write_u16(_upper_ascii_utf16(unit))
         lower.write_u16(_lower_ascii_utf16(unit))
+    return (upper.finish() << 32) | lower.finish()
+
+
+def hash_mixed_parts(parts) -> int:
+    upper = _Murmur3State()
+    lower = _Murmur3State()
+    for part in parts:
+        _write_text(upper, str(part), uppercase=True)
+        _write_text(lower, str(part), uppercase=False)
     return (upper.finish() << 32) | lower.finish()

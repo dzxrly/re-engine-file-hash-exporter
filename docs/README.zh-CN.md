@@ -74,7 +74,7 @@ natives/STM/<raw_path>.<version>.STM
 
 ## 候选模式
 
-`Candidate mode` 只控制 Step 2 如何生成 `<raw_path>.<version>` 里的候选版本号列表。平台后缀、语言后缀、`streaming/` 路径等路径变体仍由旁边的复选框控制。
+`Candidate mode` 只控制 Step 2 如何生成 `<raw_path>.<version>` 里的候选版本号列表。路径变体由 `Platform suffixes`、`Languages`、`Streaming variants` 分别控制。
 
 - `small_range`：逐个尝试 `Min version` 到 `Max version` 之间的所有版本号，包含两端。默认范围是 `0..4096`。这个模式覆盖最广，但耗时也可能最长。
 - `adaptive`：根据 Step 1 已经从 DMP 中找到的同扩展名已知版本号，按 `Neighbor radius` 向左右扩展。默认半径是 `32`，例如已知版本 `100` 会规划 `68..132`。如果所选扩展名没有任何已知版本，则退回 `Min version..Max version` 范围。
@@ -83,7 +83,15 @@ natives/STM/<raw_path>.<version>.STM
 
 一般建议：同时搜索多种不同文件类型时，优先试 `auto_detect`；Step 1 已经找到相关已知版本时可试 `adaptive`；需要扫得更广时用 `small_range`；已经知道可能版本号时用 `custom`，速度会更可控。
 
-预设文件使用普通 JSON，方便后续不改代码直接调整。它提供基准范围和优先值，最终范围由 UI 决定扩展多少。在 `extensions` 下新增或修改扩展名即可：普通数字后缀使用 `suffix_type = "numeric"` 和可选 `priority_versions`，`YYMMDD` 加数字尾号的日期型后缀使用 `suffix_type = "date_code"` 和可选 `priority_dates`、`priority_tails`。
+## 语言模式
+
+`Languages` 控制 Step 2 是否生成 `.Ja`、`.En`、`.ZhCN` 等语言后缀变体。
+
+- `localized`：默认模式。只对看起来是本地化资源的路径生成语言后缀：在 `file_suffix_profiles.json` 中标记了 `"language_search": true` 的扩展名、内置本地化扩展名（例如 `.msg`、`.asrc`、`.bnk`、`.pck`、`.sbnk`、`.spck`），或 raw path 中包含 `/message/`、`/text/`、`/subtitle/`、`/voice`、`/dialog/`、`/localization/` 等本地化目录关键词。
+- `off`：完全不生成语言后缀变体。
+- `all`：对所有选中的路径都生成语言后缀变体，等同于旧版的宽搜索行为。
+
+预设文件使用普通 JSON，方便后续不改代码直接调整。它提供基准范围和优先值，最终范围由 UI 决定扩展多少。在 `extensions` 下新增或修改扩展名即可：普通数字后缀使用 `suffix_type = "numeric"` 和可选 `priority_versions`，`YYMMDD` 加数字尾号的日期型后缀使用 `suffix_type = "date_code"` 和可选 `priority_dates`、`priority_tails`。只有常见 RE Engine 语言后缀的文件类型才建议添加 `"language_search": true`。
 
 ## GPU Batch Size
 

@@ -8,9 +8,15 @@ from multiprocessing import Manager
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .constants import DEFAULT_PLATFORM_SUFFIXES, DEFAULT_PREFIXES, IGNORED_RESOURCE_EXTENSIONS, LANGUAGES
+from .candidates import (
+    candidate_count,
+    iter_candidate_parts,
+    join_candidate_parts,
+    normalize_language_mode,
+)
+from .constants import IGNORED_RESOURCE_EXTENSIONS
 from .gpu_torch import match_extension_with_torch, torch_cuda_status
-from .hash_utf16 import hash_mixed
+from .hash_utf16 import hash_mixed_parts
 from .models import BruteForceMatch, BruteForceOptions, BruteForceResult, DmpScanResult, SuffixCounts
 from .pak_hash import load_hashes_from_paks
 from .path_parser import raw_path_from_reference
@@ -21,6 +27,8 @@ CancelCallback = Callable[[], bool]
 
 _GLOBAL_HASHES: set[int] = set()
 _GLOBAL_STOP = None
+_GLOBAL_VERSIONS: list[int] = []
+_GLOBAL_PROFILES: dict[str, dict] = {}
 
 
 def parse_custom_versions(text: str) -> list[int]:
@@ -95,35 +103,24 @@ def collect_raw_paths_by_extension(
     return {extension: sorted(raw_paths) for extension, raw_paths in out.items()}
 
 
-def _candidate_paths(
-    raw_path: str,
-    version: int,
-    include_platform_suffixes: bool,
-    include_languages: bool,
-    include_streaming: bool,
-):
-    raw_variants = [raw_path]
-    if include_streaming:
-        raw_variants.append(f"streaming/{raw_path}")
-
-    for prefix in DEFAULT_PREFIXES:
-        for raw_variant in raw_variants:
-            base = f"{prefix}{raw_variant}.{version}"
-            bases = [base]
-            if include_platform_suffixes:
-                bases.extend(f"{base}.{suffix}" for suffix in DEFAULT_PLATFORM_SUFFIXES)
-            for full_path in bases:
-                yield full_path
-                if include_languages:
-                    for language in LANGUAGES:
-                        yield f"{full_path}.{language}"
-
-
-def _init_worker(hashes: set[int], stop_signal=None) -> None:
+def _init_worker(
+    hashes: set[int],
+    stop_signal=None,
+    versions: list[int] | None = None,
+    profiles: dict[str, dict] | None = None,
+) -> None:
     global _GLOBAL_HASHES
     global _GLOBAL_STOP
+    global _GLOBAL_VERSIONS
+    global _GLOBAL_PROFILES
     _GLOBAL_HASHES = hashes
     _GLOBAL_STOP = stop_signal
+    _GLOBAL_VERSIONS = versions or []
+    _GLOBAL_PROFILES = profiles or {}
+
+
+def _clear_worker_state() -> None:
+    _init_worker(set(), None, [], {})
 
 
 def _worker_stop_requested() -> bool:
@@ -135,7 +132,7 @@ def _worker_stop_requested() -> bool:
 
 
 def _match_chunk(args) -> tuple[list[tuple[str, int, str]], int | None, int | None]:
-    raw_paths, versions, include_platform, include_languages, include_streaming = args
+    raw_paths, extension, include_platform, language_mode, include_streaming = args
     matches: list[tuple[str, int, str]] = []
     seen: set[str] = set()
     current_min: int | None = None
@@ -143,21 +140,25 @@ def _match_chunk(args) -> tuple[list[tuple[str, int, str]], int | None, int | No
     for raw_path in raw_paths:
         if _worker_stop_requested():
             return matches, current_min, current_max
-        for version in versions:
+        for version in _GLOBAL_VERSIONS:
             current_min = version if current_min is None else min(current_min, version)
             current_max = version if current_max is None else max(current_max, version)
             if _worker_stop_requested():
                 return matches, current_min, current_max
-            for full_path in _candidate_paths(
+            for parts in iter_candidate_parts(
                 raw_path,
+                extension,
                 version,
                 include_platform,
-                include_languages,
+                language_mode,
                 include_streaming,
+                _GLOBAL_PROFILES,
             ):
-                if full_path in seen:
-                    continue
-                if hash_mixed(full_path) in _GLOBAL_HASHES:
+                hash_value = hash_mixed_parts(parts)
+                if hash_value in _GLOBAL_HASHES:
+                    full_path = join_candidate_parts(parts)
+                    if full_path in seen:
+                        continue
                     seen.add(full_path)
                     matches.append((raw_path, version, full_path))
     return matches, current_min, current_max
@@ -231,7 +232,9 @@ def brute_force_suffixes(
     processes = options.processes if options.processes and options.processes > 0 else os.cpu_count() or 1
     processes = max(1, processes)
     result = BruteForceResult(warnings=warnings)
-    auto_profiles = load_version_profiles() if options.mode == "auto_detect" else {}
+    profiles = load_version_profiles()
+    auto_profiles = profiles if options.mode == "auto_detect" else {}
+    language_mode = normalize_language_mode(options.language_mode, options.include_languages)
 
     for extension, raw_paths in raw_by_ext.items():
         if stopped():
@@ -260,8 +263,9 @@ def brute_force_suffixes(
                     versions=versions,
                     pak_hashes=pak_hashes,
                     include_platform_suffixes=options.include_platform_suffixes,
-                    include_languages=options.include_languages,
+                    language_mode=language_mode,
                     include_streaming=options.include_streaming,
+                    profiles=profiles,
                     progress=progress,
                     cancel_requested=cancel_requested,
                     batch_size=options.gpu_batch_size,
@@ -289,8 +293,18 @@ def brute_force_suffixes(
                 continue
 
         if progress:
+            total_candidates = candidate_count(
+                raw_paths,
+                extension,
+                len(versions),
+                options.include_platform_suffixes,
+                language_mode,
+                options.include_streaming,
+                profiles,
+            )
             progress(
-                f"Brute matching .{extension}: {len(raw_paths)} raw paths x {len(versions)} versions using {processes} processes."
+                f"Brute matching .{extension}: {len(raw_paths)} raw paths x {len(versions)} versions "
+                f"({total_candidates} path candidates) using {processes} processes."
             )
             progress(f".{extension}: version candidates {_format_candidate_range(versions)} ({len(versions)} total).")
 
@@ -298,9 +312,9 @@ def brute_force_suffixes(
         tasks = [
             (
                 chunk,
-                versions,
+                extension,
                 options.include_platform_suffixes,
-                options.include_languages,
+                language_mode,
                 options.include_streaming,
             )
             for chunk in _chunks(raw_paths, chunk_size)
@@ -308,30 +322,33 @@ def brute_force_suffixes(
 
         completed = 0
         if processes == 1:
-            _init_worker(pak_hashes, stopped)
-            for task in tasks:
-                if stopped():
-                    result.cancelled = True
-                    if progress:
-                        progress("Stop requested. Brute-force search cancelled.")
-                    return result
-                completed += 1
-                chunk_matches, min_version, max_version = _match_chunk(task)
-                _record_chunk_matches(
-                    result,
-                    extension,
-                    completed,
-                    len(tasks),
-                    chunk_matches,
-                    progress,
-                    min_version,
-                    max_version,
-                )
-                if stopped():
-                    result.cancelled = True
-                    if progress:
-                        progress("Stop requested. Brute-force search cancelled.")
-                    return result
+            _init_worker(pak_hashes, stopped, versions, profiles)
+            try:
+                for task in tasks:
+                    if stopped():
+                        result.cancelled = True
+                        if progress:
+                            progress("Stop requested. Brute-force search cancelled.")
+                        return result
+                    completed += 1
+                    chunk_matches, min_version, max_version = _match_chunk(task)
+                    _record_chunk_matches(
+                        result,
+                        extension,
+                        completed,
+                        len(tasks),
+                        chunk_matches,
+                        progress,
+                        min_version,
+                        max_version,
+                    )
+                    if stopped():
+                        result.cancelled = True
+                        if progress:
+                            progress("Stop requested. Brute-force search cancelled.")
+                        return result
+            finally:
+                _clear_worker_state()
             continue
 
         manager = Manager()
@@ -339,7 +356,7 @@ def brute_force_suffixes(
         executor = ProcessPoolExecutor(
             max_workers=processes,
             initializer=_init_worker,
-            initargs=(pak_hashes, stop_signal),
+            initargs=(pak_hashes, stop_signal, versions, profiles),
         )
         futures = [executor.submit(_match_chunk, task) for task in tasks]
         pending = set(futures)

@@ -27,7 +27,7 @@ from tkinter import (
 )
 from tkinter import ttk
 
-from ..core.constants import IGNORED_RESOURCE_EXTENSIONS
+from ..core.constants import IGNORED_RESOURCE_EXTENSIONS, LANGUAGE_MODE_LOCALIZED, LANGUAGE_MODE_OFF, LANGUAGE_MODES
 from ..core.models import BruteForceOptions, DmpScanResult
 from ..core.version_profiles import any_extension_uses_date_profile, default_date_range
 from ..core.workflow import ExportWorkflow
@@ -56,7 +56,7 @@ class ExporterApp:
         self.date_start = StringVar(value=default_date_start)
         self.date_end = StringVar(value=default_date_end)
         self.include_platform = BooleanVar(value=True)
-        self.include_languages = BooleanVar(value=True)
+        self.language_mode = StringVar(value=LANGUAGE_MODE_LOCALIZED)
         self.include_streaming = BooleanVar(value=True)
         self.request_gpu = BooleanVar(value=False)
         self.gpu_batch_size = StringVar(value="16384")
@@ -165,8 +165,15 @@ class ExporterApp:
 
         self.platform_check = Checkbutton(right, text="Platform suffixes", variable=self.include_platform)
         self.platform_check.pack(anchor="w")
-        self.languages_check = Checkbutton(right, text="Languages", variable=self.include_languages)
-        self.languages_check.pack(anchor="w")
+        Label(right, text="Languages").pack(anchor="w")
+        self.language_mode_combo = ttk.Combobox(
+            right,
+            textvariable=self.language_mode,
+            values=list(LANGUAGE_MODES),
+            state="readonly",
+            width=18,
+        )
+        self.language_mode_combo.pack(anchor="w")
         self.streaming_check = Checkbutton(right, text="Streaming variants", variable=self.include_streaming)
         self.streaming_check.pack(anchor="w")
         self.gpu_check = Checkbutton(
@@ -247,7 +254,7 @@ class ExporterApp:
             self.date_end_entry,
             self.processes_entry,
             self.platform_check,
-            self.languages_check,
+            self.language_mode_combo,
             self.streaming_check,
             self.gpu_check,
             self.gpu_batch_entry,
@@ -470,7 +477,8 @@ class ExporterApp:
             date_end=self.date_end.get().strip(),
             processes=int(self.processes.get() or 0),
             include_platform_suffixes=self.include_platform.get(),
-            include_languages=self.include_languages.get(),
+            include_languages=self.language_mode.get() != LANGUAGE_MODE_OFF,
+            language_mode=self.language_mode.get(),
             include_streaming=self.include_streaming.get(),
             request_gpu=self.request_gpu.get(),
             gpu_batch_size=gpu_batch_size,

@@ -61,6 +61,7 @@ class BruteForceOptions:
     processes: int = 0
     include_platform_suffixes: bool = True
     include_languages: bool = True
+    language_mode: str = "localized"
     include_streaming: bool = True
     request_gpu: bool = False
     gpu_batch_size: int = 16384
