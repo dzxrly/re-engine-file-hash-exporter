@@ -16,8 +16,11 @@
 - 第二步可選顯示已經存在後綴的副檔名，用於繼續搜尋可能新增的版本後綴。
 - 暴力匹配只讀取 PAK 中繼資料 hash，不解包 PAK 內容。
 - 支援批次加入多個 PAK 檔案。
+- 當 PAK 檔案未變更時，重複執行 Step 2 會重用已讀取的 PAK 中繼資料快取。
 - CPU 模式使用多行程平行匹配。
+- CPU 搜尋會依 PAK 群組重用 worker，並重用預先計算的 UTF-16 hash 前綴狀態。
 - 勾選 `GPU acceleration (CUDA only)` 且安裝 CUDA 可用的 `torch` 時，會使用 torch CUDA 加速。
+- GPU 搜尋會批次處理預編碼的 UTF-16 候選片段，減少完整路徑字串建構與重複編碼。
 - 只有啟用 GPU 模式時才顯示 `GPU batch size` 設定。
 - 暴力匹配過程中可隨時點擊 `Stop` 停止搜尋。
 - 掃描或暴力匹配執行時會鎖定檔案輸入和任務選項，避免中途修改輸入。
@@ -72,6 +75,8 @@ natives/STM/<raw_path>.<version>.STM
 
 隨後工具會計算每個候選路徑的 RE Engine mixed UTF-16 hash，並與從 PAK entry table 讀取到的 hash 集合進行匹配。匹配成功後，版本號會合併回 `suffix_map`，並重新儲存 `config.toml`。
 
+候選生成會結合 profile 和 DMP 中的路徑證據。Step 1 會為每個 raw path 記錄它是否來自 `streaming/` 路徑，以及是否已經帶有 `.STM`、`.X64` 這類平台尾綴。Step 2 會利用這些資訊減少不必要的路徑變體。
+
 ## 候選模式
 
 `Candidate mode` 只控制 Step 2 如何產生 `<raw_path>.<version>` 裡的候選版本號列表。路徑變體由 `Platform suffixes`、`Languages`、`Streaming variants` 分別控制。
@@ -92,6 +97,22 @@ natives/STM/<raw_path>.<version>.STM
 - `all`：對所有選中的路徑都產生語言後綴變體，等同於舊版的寬搜尋行為。
 
 預設檔案使用普通 JSON，方便後續不改程式碼直接調整。它提供基準範圍和優先值，最終範圍由 UI 決定擴展多少。在 `extensions` 下新增或修改副檔名即可：普通數字後綴使用 `suffix_type = "numeric"` 和可選 `priority_versions`，`YYMMDD` 加數字尾號的日期型後綴使用 `suffix_type = "date_code"` 和可選 `priority_dates`、`priority_tails`。只有常見 RE Engine 語言後綴的檔案類型才建議添加 `"language_search": true`。
+
+## 候選剪枝
+
+每個副檔名 profile 還可以控制路徑變體：
+
+- `language_search`：`true` 為該副檔名啟用語言尾綴；`false` 即使在寬語言模式下也停用。
+- `streaming_search`：`false` 停用 `streaming/` 變體，`true` 對每條路徑都搜尋 streaming，`"observed"` 只對 DMP 中確實見過 streaming 的路徑搜尋。
+- `platform_search`：`false` 停用 `.X64` / `.STM` 變體，`"observed"` 只搜尋 DMP 中見過的平台尾綴，也可以寫成 `["STM"]` 這類清單來明確限制。
+
+如果省略 `streaming_search`，Step 2 預設按路徑級 streaming 證據生成，而不是對所有 raw path 都翻倍。如果省略 `platform_search`，UI 的 `Platform suffixes` 會保持原本的寬搜尋行為。
+
+## 效能說明
+
+CPU 匹配會預先計算 `natives/STM/<raw_path>.` 這類長路徑前綴的 hash 狀態，再追加預編碼的版本號、平台和語言尾綴片段，避免每個候選都重新編碼和重新 hash 完整路徑。
+
+同一個 PAK group 內搜尋多個副檔名時，CPU worker 會重用。PAK entry hash 會依路徑、檔案大小和修改時間快取在 workflow 中，因此 PAK 未變更時重複執行 Step 2 可以跳過中繼資料讀取。
 
 ## GPU Batch Size
 

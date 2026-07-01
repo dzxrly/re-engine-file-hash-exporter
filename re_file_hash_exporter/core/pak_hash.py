@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ HEADER_MAGIC = b"KPKA"
 ENTRY_ENCRYPTION = 1 << 3
 EXTRA_U32 = 1 << 4
 EXTRA_DATA = 1 << 2
+PATCH_NAME_RE = re.compile(r"^(?P<base>.+\.pak)\.patch_(?P<patch>\d+)\.pak$", re.IGNORECASE)
 
 MODULUS_BYTES = bytes(
     [
@@ -54,6 +56,50 @@ class PakHeader:
         if self.major_version == 4:
             return 48
         raise ValueError(f"Unsupported PAK major version: {self.major_version}")
+
+
+@dataclass(slots=True)
+class PakHashGroup:
+    path: Path
+    hashes: set[int]
+    group_key: str
+    order_index: int
+    patch_index: int | None = None
+
+    @property
+    def is_incremental(self) -> bool:
+        return self.patch_index is not None
+
+    @property
+    def display_name(self) -> str:
+        return self.path.name
+
+
+def pak_group_identity(path: Path) -> tuple[str, int | None]:
+    name = path.name
+    match = PATCH_NAME_RE.match(name)
+    if match:
+        return match.group("base").lower(), int(match.group("patch"))
+    return name.lower(), None
+
+
+def classify_pak_path(path: Path, order_index: int, hashes: set[int]) -> PakHashGroup:
+    group_key, patch_index = pak_group_identity(path)
+    if patch_index is not None:
+        return PakHashGroup(
+            path=path,
+            hashes=hashes,
+            group_key=group_key,
+            order_index=order_index,
+            patch_index=patch_index,
+        )
+    return PakHashGroup(
+        path=path,
+        hashes=hashes,
+        group_key=group_key,
+        order_index=order_index,
+        patch_index=None,
+    )
 
 
 def decrypt_key(enc_key: bytes) -> bytes:
@@ -124,18 +170,43 @@ def load_hashes_from_paks(
     workers: int = 0,
     progress: ProgressCallback | None = None,
 ) -> set[int]:
+    groups = load_hash_groups_from_paks(pak_paths, workers=workers, progress=progress)
+    all_hashes: set[int] = set()
+    for group in groups:
+        all_hashes.update(group.hashes)
+    return all_hashes
+
+
+def load_hash_groups_from_paks(
+    pak_paths: list[Path],
+    workers: int = 0,
+    progress: ProgressCallback | None = None,
+) -> list[PakHashGroup]:
     if not pak_paths:
         raise ValueError("No PAK files selected.")
     max_workers = workers if workers and workers > 0 else min(8, len(pak_paths))
-    all_hashes: set[int] = set()
+    groups: list[PakHashGroup] = []
+    group_order: dict[str, int] = {}
+    for path in pak_paths:
+        group_key, _patch_index = pak_group_identity(path)
+        group_order.setdefault(group_key, len(group_order))
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(read_pak_hashes, path): path for path in pak_paths}
+        futures = {executor.submit(read_pak_hashes, path): (index, path) for index, path in enumerate(pak_paths)}
         for index, future in enumerate(as_completed(futures), start=1):
-            path = futures[future]
+            order_index, path = futures[future]
             hashes = future.result()
-            all_hashes.update(hashes)
+            group = classify_pak_path(path, order_index, hashes)
+            groups.append(group)
             if progress:
-                progress(f"Loaded PAK metadata [{index}/{len(pak_paths)}]: {path.name} ({len(hashes)} hashes)")
+                mode = "incremental" if group.is_incremental else "base"
+                progress(f"Loaded PAK metadata [{index}/{len(pak_paths)}]: {path.name} ({len(hashes)} hashes, {mode})")
 
-    return all_hashes
+    return sorted(
+        groups,
+        key=lambda group: (
+            group_order[group.group_key],
+            -1 if group.patch_index is None else group.patch_index,
+            group.order_index,
+        ),
+    )

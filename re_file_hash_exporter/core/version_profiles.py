@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from .constants import IGNORED_RESOURCE_EXTENSIONS
 from .models import BruteForceOptions, SuffixCounts
+from .version_plan import VersionPlan, date_code_plan, discrete_version_plan, empty_version_plan, numeric_range_plan
 
 PROFILE_FILE_NAME = "file_suffix_profiles.json"
 MIN_DATE_CODE_DATE = date(2000, 1, 1)
@@ -81,6 +82,33 @@ def plan_auto_detect_versions(
     return _range_versions(options, _priority_versions(profile), cancel_requested)
 
 
+def build_auto_detect_version_plan(
+    extension: str,
+    known_suffixes: SuffixCounts,
+    options: BruteForceOptions,
+    profiles: dict[str, dict[str, Any]],
+) -> VersionPlan:
+    normalized = _normalize_extension(extension)
+    profile = profiles.get(normalized)
+    suffix_type = _profile_suffix_type(profile)
+
+    if suffix_type == "exact":
+        return _range_version_plan(options, _priority_versions(profile), "legacy exact-as-priority range")
+
+    if suffix_type == "date_code":
+        if profile is None:
+            return empty_version_plan("missing date_code profile")
+        return _date_code_version_plan(profile, options)
+
+    if suffix_type == "adaptive":
+        adaptive = _adaptive_version_plan(normalized, known_suffixes, options)
+        if adaptive.count:
+            return adaptive
+
+    description = "numeric priority range preset" if profile else "numeric Min/Max fallback"
+    return _range_version_plan(options, _priority_versions(profile), description)
+
+
 def describe_auto_profile(extension: str, profiles: dict[str, dict[str, Any]]) -> str:
     normalized = _normalize_extension(extension)
     profile = profiles.get(normalized)
@@ -104,6 +132,59 @@ def _profile_suffix_type(profile: dict[str, Any] | None) -> str:
     if not profile:
         return "numeric"
     return str(profile.get("suffix_type") or "numeric").lower()
+
+
+def _range_version_plan(
+    options: BruteForceOptions,
+    priority_versions: list[int] | None = None,
+    description: str = "numeric range",
+) -> VersionPlan:
+    priority = _ordered_unique(priority_versions or [])
+    if priority:
+        lower_delta = max(0, int(options.min_version))
+        upper_delta = max(0, int(options.max_version))
+        start = max(0, min(priority) - lower_delta)
+        end = max(start, max(priority) + upper_delta)
+    else:
+        start = max(0, int(options.min_version))
+        end = max(start, int(options.max_version))
+    return numeric_range_plan(start, end, priority, description)
+
+
+def _adaptive_version_plan(
+    extension: str,
+    known_suffixes: SuffixCounts,
+    options: BruteForceOptions,
+) -> VersionPlan:
+    values: set[int] = set()
+    for known in known_suffixes.get(extension, {}):
+        start = max(0, known - options.neighbor_radius)
+        end = known + options.neighbor_radius
+        values.update(range(start, end + 1))
+    return discrete_version_plan(sorted(values), "adaptive known-neighbor range")
+
+
+def _date_code_version_plan(profile: dict[str, Any], options: BruteForceOptions) -> VersionPlan:
+    if str(profile.get("date_format", "YYMMDD")).upper() != "YYMMDD":
+        raise ValueError("Only YYMMDD date_code profiles are currently supported.")
+
+    base_dates = _priority_dates(profile)
+    if base_dates:
+        lower_delta = _parse_day_offset(options.date_start, "Date -days")
+        upper_delta = _parse_day_offset(options.date_end, "Date +days")
+        start_date = max(MIN_DATE_CODE_DATE, min(base_dates) - timedelta(days=lower_delta))
+        end_date = max(start_date, max(base_dates) + timedelta(days=upper_delta))
+    else:
+        start_date, end_date = _legacy_date_range(profile, options)
+
+    return date_code_plan(
+        start_date=start_date,
+        end_date=end_date,
+        tail_width=int(profile.get("tail_width", 3)),
+        priority_dates=base_dates,
+        priority_tails=_priority_tails(profile),
+        description="date_code priority range preset",
+    )
 
 
 def _range_versions(

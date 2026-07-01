@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Iterable
+
 MASK32 = 0xFFFF_FFFF
 MURMUR3_C1 = 0x85EB_CA6B
 MURMUR3_C2 = 0xC2B2_AE35
@@ -47,6 +50,14 @@ class _Murmur3State:
         self.tail = bytearray(4)
         self.tail_len = 0
 
+    def clone(self) -> "_Murmur3State":
+        other = _Murmur3State()
+        other.state = self.state
+        other.processed = self.processed
+        other.tail[:] = self.tail
+        other.tail_len = self.tail_len
+        return other
+
     def write_byte(self, byte: int) -> None:
         self.tail[self.tail_len] = byte & 0xFF
         self.tail_len += 1
@@ -63,13 +74,18 @@ class _Murmur3State:
         self.write_byte(unit & 0xFF)
         self.write_byte((unit >> 8) & 0xFF)
 
+    def write_units(self, units: Iterable[int]) -> None:
+        for unit in units:
+            self.write_u16(unit)
+
     def finish(self) -> int:
+        state = self.state
         if self.tail_len:
             k = 0
             for index in range(self.tail_len):
                 k |= self.tail[index] << (index * 8)
-            self.state ^= _murmur3_calc_k(k)
-        return _murmur3_finish(self.state, self.processed)
+            state ^= _murmur3_calc_k(k)
+        return _murmur3_finish(state, self.processed)
 
 
 def _lower_ascii_utf16(unit: int) -> int:
@@ -89,9 +105,61 @@ def _utf16_units(value: str) -> list[int]:
     return [int.from_bytes(data[i : i + 2], "little") for i in range(0, len(data), 2)]
 
 
+def _case_utf16_units(value: str, uppercase: bool) -> tuple[int, ...]:
+    if uppercase:
+        return tuple(_upper_ascii_utf16(unit) for unit in _utf16_units(value))
+    return tuple(_lower_ascii_utf16(unit) for unit in _utf16_units(value))
+
+
 def _write_text(state: _Murmur3State, value: str, uppercase: bool) -> None:
     for unit in _utf16_units(value):
         state.write_u16(_upper_ascii_utf16(unit) if uppercase else _lower_ascii_utf16(unit))
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMixedText:
+    text: str
+    upper_units: tuple[int, ...]
+    lower_units: tuple[int, ...]
+
+
+def prepare_mixed_text(value: str) -> PreparedMixedText:
+    return PreparedMixedText(
+        text=value,
+        upper_units=_case_utf16_units(value, uppercase=True),
+        lower_units=_case_utf16_units(value, uppercase=False),
+    )
+
+
+class MixedHashState:
+    __slots__ = ("upper", "lower")
+
+    def __init__(self) -> None:
+        self.upper = _Murmur3State()
+        self.lower = _Murmur3State()
+
+    def clone(self) -> "MixedHashState":
+        other = MixedHashState.__new__(MixedHashState)
+        other.upper = self.upper.clone()
+        other.lower = self.lower.clone()
+        return other
+
+    def write_text(self, value: str) -> None:
+        self.write_prepared(prepare_mixed_text(value))
+
+    def write_prepared(self, value: PreparedMixedText) -> None:
+        self.upper.write_units(value.upper_units)
+        self.lower.write_units(value.lower_units)
+
+    def digest(self) -> int:
+        return (self.upper.finish() << 32) | self.lower.finish()
+
+
+def hash_mixed_prepared_parts(parts: Iterable[PreparedMixedText]) -> int:
+    state = MixedHashState()
+    for part in parts:
+        state.write_prepared(part)
+    return state.digest()
 
 
 def hash_lower_case(value: str) -> int:

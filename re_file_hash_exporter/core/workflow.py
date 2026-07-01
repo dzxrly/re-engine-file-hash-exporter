@@ -7,6 +7,7 @@ from .bruteforce import brute_force_suffixes
 from .config_builder import merge_suffix_counts, write_config, write_missing_report
 from .dmp_scanner import scan_dmp_file
 from .models import BruteForceOptions, BruteForceResult, DmpScanResult, SuffixCounts
+from .pak.cache import PakHashCache
 
 ProgressCallback = Callable[[object], None]
 CancelCallback = Callable[[], bool]
@@ -16,6 +17,7 @@ class ExportWorkflow:
     def __init__(self) -> None:
         self.scan_result: DmpScanResult | None = None
         self.suffix_counts: SuffixCounts = {}
+        self.pak_cache = PakHashCache()
 
     def run_simple_export(
         self,
@@ -51,6 +53,7 @@ class ExportWorkflow:
             options,
             progress=progress,
             cancel_requested=cancel_requested,
+            pak_cache=self.pak_cache,
         )
         if result.cancelled:
             found_versions = result.versions_by_extension()

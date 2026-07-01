@@ -16,8 +16,11 @@ It scans resource paths from a selected `.DMP` file, exports known versioned suf
 - Optionally show already versioned extensions in Step 2 so they can be searched for additional suffix versions.
 - Match candidates against PAK metadata hashes without unpacking PAK content.
 - Support multiple PAK files.
+- Cache PAK metadata between repeated Step 2 runs when the selected PAK files do not change.
 - Use CPU multiprocessing for brute-force matching.
+- Reuse CPU worker pools per PAK group and reuse precomputed UTF-16 hash prefix states.
 - Use torch CUDA acceleration when `GPU acceleration (CUDA only)` is enabled and a CUDA-enabled `torch` install is available.
+- Reduce GPU-side search overhead by batching pre-encoded UTF-16 candidate units instead of complete path strings.
 - Show `GPU batch size` only when GPU mode is requested.
 - Allow stopping brute-force matching at any time.
 - Lock file inputs and step options while a scan or brute-force task is running.
@@ -72,6 +75,8 @@ natives/STM/<raw_path>.<version>.STM
 
 The tool computes the RE Engine mixed UTF-16 hash for each candidate and compares it with the hash set read from the PAK entry tables. Successful matches are merged into `suffix_map`, then `config.toml` is saved again.
 
+Candidate generation is profile-guided. Step 1 keeps light path evidence for each raw path, including whether the DMP reference was seen under `streaming/` and whether a platform tail such as `.STM` or `.X64` was already present. Step 2 uses that evidence together with `file_suffix_profiles.json` to avoid unnecessary path variants.
+
 ## Candidate Modes
 
 `Candidate mode` controls only how Step 2 builds the candidate version-number list used in `<raw_path>.<version>`. Path variants are controlled separately by `Platform suffixes`, `Languages`, and `Streaming variants`.
@@ -92,6 +97,22 @@ As a rule of thumb, start with `auto_detect` when searching several different fi
 - `all`: generates language suffix variants for every selected path, matching the older broad-search behavior.
 
 The preset file is intentionally plain JSON so it can be tuned without code changes. It defines baseline ranges and priority values, while the UI controls how far those ranges expand. Add or edit entries under `extensions`; use `suffix_type = "numeric"` with optional `priority_versions`, or `suffix_type = "date_code"` with optional `priority_dates` and `priority_tails`. Add `"language_search": true` only for file types whose paths commonly use RE Engine language suffixes.
+
+## Candidate Pruning
+
+Each extension profile can also narrow path variants:
+
+- `language_search`: `true` enables language suffixes for the extension; `false` disables them even in broad language modes.
+- `streaming_search`: `false` disables `streaming/` variants, `true` searches them for every path, and `"observed"` searches them only for paths that were seen as streaming references in the DMP.
+- `platform_search`: `false` disables `.X64` / `.STM` variants, `"observed"` searches only platform suffixes seen in the DMP, and a list such as `["STM"]` limits the suffixes explicitly.
+
+When `streaming_search` is omitted, Step 2 defaults to path-level streaming evidence instead of doubling every raw path. When `platform_search` is omitted, the UI `Platform suffixes` option keeps the previous broad behavior.
+
+## Performance Notes
+
+CPU matching precomputes the hash state for long path prefixes such as `natives/STM/<raw_path>.`, then appends pre-encoded version, platform, and language suffix fragments. This avoids re-encoding and re-hashing the full path for every candidate.
+
+When several extensions are searched against the same PAK group, CPU workers are reused for the whole group. PAK entry hashes are cached on the workflow object using path, size, and modification time, so repeated Step 2 runs with unchanged PAKs skip metadata loading.
 
 ## GPU Batch Size
 

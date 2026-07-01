@@ -5,6 +5,11 @@
     "numeric": "Use priority_versions as the baseline version range; UI Min version subtracts from the baseline lower bound and UI Max version adds to the baseline upper bound.",
     "date_code": "Use priority_dates as the baseline date range; UI date offsets expand the lower and upper date bounds, and priority_tails are tried first."
   },
+  "candidate_pruning": {
+    "platform_search": "Optional per-extension override. false disables platform suffixes; observed searches only platform suffixes seen in the DMP; a list limits suffixes explicitly.",
+    "streaming_search": "Optional per-extension override. false disables streaming variants; true searches streaming for every path; observed searches streaming only when seen in the DMP.",
+    "language_search": "true enables localized suffixes for the extension; false disables them even when language mode is all/localized."
+  },
   "extensions": {
     "mesh": {
       "suffix_type": "date_code",
@@ -579,6 +584,8 @@
     "asrc": {
       "suffix_type": "numeric",
       "language_search": true,
+      "platform_search": "observed",
+      "streaming_search": "observed",
       "priority_versions": [
         14,
         21,
@@ -605,6 +612,8 @@
     "bnk": {
       "suffix_type": "numeric",
       "language_search": true,
+      "platform_search": "observed",
+      "streaming_search": "observed",
       "priority_versions": [
         2
       ]
@@ -1519,6 +1528,8 @@
     "msg": {
       "suffix_type": "numeric",
       "language_search": true,
+      "platform_search": "observed",
+      "streaming_search": "observed",
       "priority_versions": [
         12,
         14,
@@ -1607,6 +1618,8 @@
     "pck": {
       "suffix_type": "numeric",
       "language_search": true,
+      "platform_search": "observed",
+      "streaming_search": "observed",
       "priority_versions": [
         3
       ]
@@ -1785,6 +1798,8 @@
     "sbnk": {
       "suffix_type": "numeric",
       "language_search": true,
+      "platform_search": "observed",
+      "streaming_search": "observed",
       "priority_versions": [
         1
       ]
@@ -1840,6 +1855,8 @@
     "spck": {
       "suffix_type": "numeric",
       "language_search": true,
+      "platform_search": "observed",
+      "streaming_search": "observed",
       "priority_versions": [
         1
       ]
