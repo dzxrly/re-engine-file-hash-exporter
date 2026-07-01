@@ -232,15 +232,18 @@ def match_extension_with_torch(
     cancel_requested: CancelCallback | None,
     scan_progress: ScanProgressCallback | None = None,
     batch_size: int = 16384,
+    found_versions: set[int] | None = None,
 ) -> tuple[list[tuple[str, int, str]], bool]:
     ok, message = torch_cuda_status()
     if not ok:
         raise RuntimeError(message)
 
+    discovered_versions = found_versions if found_versions is not None else set()
+    active_versions = [version for version in versions if version not in discovered_versions]
     total_candidates = candidate_count_for_entries(
         entries,
         extension,
-        len(versions),
+        len(active_versions),
         include_platform_suffixes,
         language_mode,
         include_streaming,
@@ -260,13 +263,14 @@ def match_extension_with_torch(
             iter_prepared_gpu_batches(
                 entries,
                 extension,
-                versions,
+                active_versions,
                 include_platform_suffixes,
                 language_mode,
                 include_streaming,
                 profiles,
                 batch_size,
                 cancel_requested,
+                discovered_versions,
             ),
             start=1,
         ):
@@ -283,11 +287,14 @@ def match_extension_with_torch(
                 scan_progress(len(batch))
             batch_matches = []
             for item, hash_value in zip(batch, hashes):
+                if item.version in discovered_versions:
+                    continue
                 if hash_value in pak_hashes:
                     full_path = item.full_path
                     if full_path in seen:
                         continue
                     seen.add(full_path)
+                    discovered_versions.add(item.version)
                     batch_matches.append((item.raw_path, item.version, full_path))
             matches.extend(batch_matches)
 

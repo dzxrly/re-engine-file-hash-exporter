@@ -75,6 +75,8 @@ class BruteForceProgressTracker:
         self.phase = "searching"
         self.phase_detail = f"Finished .{current_extension}" if current_extension else "Searching"
         self.completed_extensions = min(self.total_extensions, self.completed_extensions + 1)
+        if self.completed_extensions >= self.total_extensions:
+            self.completed_scan_count = self.total_scan_count
         self.current_extension = current_extension
         self.emit(force=True)
 
@@ -101,4 +103,3 @@ class BruteForceProgressTracker:
                 phase_detail=self.phase_detail,
             )
         )
-

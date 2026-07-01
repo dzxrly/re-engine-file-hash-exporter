@@ -35,8 +35,10 @@ def iter_prepared_gpu_batches(
     profiles: dict[str, dict] | None,
     batch_size: int,
     cancel_requested: CancelCallback | None,
+    found_versions: set[int] | None = None,
 ):
     batch: list[PreparedGpuCandidate] = []
+    discovered_versions = found_versions if found_versions is not None else set()
     bases = [
         _PreparedGpuBase.from_base(base)
         for entry in entries
@@ -51,14 +53,20 @@ def iter_prepared_gpu_batches(
     ]
     suffix_cache = _PreparedSuffixCache()
     for version in versions:
+        if version in discovered_versions:
+            continue
         if cancel_requested and cancel_requested():
             break
         version_text = str(version)
         version_prepared = suffix_cache.prepare(version_text)
         for base in bases:
+            if version in discovered_versions:
+                break
             if cancel_requested and cancel_requested():
                 break
             for candidate in _iter_gpu_candidates(base, version, version_text, version_prepared, suffix_cache):
+                if version in discovered_versions:
+                    break
                 batch.append(candidate)
                 if len(batch) >= batch_size:
                     yield batch
@@ -167,4 +175,3 @@ def _make_gpu_candidate(
         upper_units=upper_units,
         lower_units=lower_units,
     )
-

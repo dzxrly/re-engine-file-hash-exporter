@@ -82,6 +82,7 @@ def plan_group(
     incremental_group: bool,
     entries_by_extension: dict[str, list[RawPathEntry]],
     known_suffixes: SuffixCounts,
+    skip_versions_by_extension: dict[str, set[int]],
     max_versions_by_extension: dict[str, int],
     options: BruteForceOptions,
     profiles: dict[str, dict],
@@ -153,6 +154,14 @@ def plan_group(
         elif incremental_group and progress:
             progress(f".{extension}: no known maximum yet, using full plan for this incremental PAK.")
 
+        skipped_versions = skip_versions_by_extension.get(extension, set())
+        if skipped_versions:
+            original_count = plan.count
+            plan = plan.without_values(skipped_versions)
+            skipped_count = original_count - plan.count
+            if skipped_count and progress:
+                progress(f".{extension}: skipped {skipped_count} already discovered version(s).")
+
         versions_by_extension[extension] = plan
         candidate_counts_by_extension[extension] = (
             candidate_count_for_entries(
@@ -182,4 +191,3 @@ def plan_group(
 def _raise_if_cancelled(cancel_requested: CancelCallback | None) -> None:
     if cancel_requested and cancel_requested():
         raise InterruptedError("Brute-force planning was cancelled.")
-

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Callable, Iterable, Iterator
 
 CancelCallback = Callable[[], bool]
@@ -36,6 +36,7 @@ class VersionPlan:
     high: int | None
     _iter_values: Callable[[CancelCallback | None], Iterator[int]] = field(repr=False)
     _with_minimum: Callable[[int], "VersionPlan"] | None = field(default=None, repr=False)
+    _contains: Callable[[int], bool] | None = field(default=None, repr=False)
 
     def iter_values(self, cancel_requested: CancelCallback | None = None) -> Iterator[int]:
         yield from self._iter_values(cancel_requested)
@@ -85,11 +86,57 @@ class VersionPlan:
             low=low,
             high=high,
             _iter_values=iter_values,
+            _contains=lambda value: self.contains(value) and int(value) >= minimum,
+        )
+
+    def contains(self, value: int) -> bool:
+        value = int(value)
+        if self._contains is not None:
+            return self._contains(value)
+        return any(candidate == value for candidate in self.iter_values(None))
+
+    def without_values(self, excluded: Iterable[int], label: str = "already discovered") -> "VersionPlan":
+        excluded_values = {int(value) for value in excluded}
+        if not excluded_values or not self.count:
+            return self
+
+        matching_values = {value for value in excluded_values if self.contains(value)}
+        if not matching_values:
+            return self
+
+        count = max(0, self.count - len(matching_values))
+        description = f"{self.description}, excluding {len(matching_values)} {label}"
+        if count <= 0:
+            return empty_version_plan(description)
+
+        def iter_values(cancel_requested: CancelCallback | None = None) -> Iterator[int]:
+            for value in self.iter_values(cancel_requested):
+                if value not in matching_values:
+                    yield value
+
+        def with_minimum(minimum: int) -> "VersionPlan":
+            return self.with_minimum(minimum).without_values(matching_values, label)
+
+        return VersionPlan(
+            description=description,
+            count=count,
+            low=self.low,
+            high=self.high,
+            _iter_values=iter_values,
+            _with_minimum=with_minimum,
+            _contains=lambda value: self.contains(value) and int(value) not in matching_values,
         )
 
 
 def empty_version_plan(description: str = "none") -> VersionPlan:
-    return VersionPlan(description=description, count=0, low=None, high=None, _iter_values=lambda _cancel: iter(()))
+    return VersionPlan(
+        description=description,
+        count=0,
+        low=None,
+        high=None,
+        _iter_values=lambda _cancel: iter(()),
+        _contains=lambda _value: False,
+    )
 
 
 def numeric_range_plan(
@@ -132,6 +179,7 @@ def numeric_range_plan(
         high=end,
         _iter_values=iter_values,
         _with_minimum=with_minimum,
+        _contains=lambda value: start <= int(value) <= end,
     )
 
 
@@ -140,6 +188,7 @@ def discrete_version_plan(
     description: str = "discrete versions",
 ) -> VersionPlan:
     ordered = _ordered_unique(values)
+    value_set = set(ordered)
     low = min(ordered) if ordered else None
     high = max(ordered) if ordered else None
 
@@ -161,6 +210,7 @@ def discrete_version_plan(
         high=high,
         _iter_values=iter_values,
         _with_minimum=with_minimum,
+        _contains=lambda value: int(value) in value_set,
     )
 
 
@@ -239,7 +289,21 @@ def date_code_plan(
             low=max(low, minimum) if filtered_count else None,
             high=high if filtered_count else None,
             _iter_values=filtered_values,
+            _contains=lambda value: contains(value) and int(value) >= minimum,
         )
+
+    def contains(value: int) -> bool:
+        value = int(value)
+        if value < low or value > high:
+            return False
+        date_value, tail = divmod(value, multiplier)
+        if tail < tail_low or tail > tail_high:
+            return False
+        try:
+            current = datetime.strptime(f"{date_value:06d}", "%y%m%d").date()
+        except ValueError:
+            return False
+        return start_date <= current <= end_date
 
     return VersionPlan(
         description=description,
@@ -248,4 +312,5 @@ def date_code_plan(
         high=high,
         _iter_values=iter_values,
         _with_minimum=with_minimum,
+        _contains=contains,
     )

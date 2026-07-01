@@ -108,7 +108,8 @@ def brute_force_suffixes(
     language_mode = normalize_language_mode(options.language_mode, options.include_languages)
     processes = options.processes if options.processes and options.processes > 0 else os.cpu_count() or 1
     processes = max(1, processes)
-    max_versions_by_extension = _initial_max_versions(known_suffixes)
+    max_versions_by_group: dict[str, dict[str, int]] = {}
+    discovered_versions_by_extension = _initial_discovered_versions(known_suffixes)
     baseline_groups: set[str] = set()
 
     for group_index, group in enumerate(pak_groups, start=1):
@@ -128,7 +129,8 @@ def brute_force_suffixes(
             incremental_group=incremental_group,
             entries_by_extension=entries_by_extension,
             known_suffixes=known_suffixes,
-            max_versions_by_extension=max_versions_by_extension,
+            skip_versions_by_extension=discovered_versions_by_extension,
+            max_versions_by_extension=max_versions_by_group.get(group.group_key, {}) if incremental_group else {},
             options=options,
             profiles=profiles,
             auto_profiles=auto_profiles,
@@ -168,11 +170,16 @@ def brute_force_suffixes(
 
                 plan = group_plan.versions_by_extension[extension]
                 if not plan.count:
-                    result.warnings.append(f"No candidate versions planned for {extension} in {group.display_name}.")
+                    if discovered_versions_by_extension.get(extension):
+                        if progress:
+                            progress(f".{extension}: no new candidate versions to search for {group.display_name}.")
+                    else:
+                        result.warnings.append(f"No candidate versions planned for {extension} in {group.display_name}.")
                     tracker.finish_extension(extension)
                     continue
 
                 before_match_count = len(result.matches)
+                found_versions = discovered_versions_by_extension.setdefault(extension, set())
                 if use_gpu:
                     gpu_outcome = _search_extension_gpu(
                         extension=extension,
@@ -187,6 +194,7 @@ def brute_force_suffixes(
                         progress=progress,
                         cancel_requested=cancel_requested,
                         stopped=stopped,
+                        found_versions=found_versions,
                     )
                     result.matches.extend(gpu_outcome.matches)
                     use_gpu = gpu_outcome.gpu_available
@@ -196,7 +204,11 @@ def brute_force_suffixes(
                         result.cancelled = True
                         return result
                     if gpu_outcome.completed:
-                        _update_max_versions(max_versions_by_extension, result.matches[before_match_count:])
+                        _update_group_max_versions(
+                            max_versions_by_group,
+                            group.group_key,
+                            result.matches[before_match_count:],
+                        )
                         continue
 
                 _search_extension_cpu(
@@ -212,8 +224,13 @@ def brute_force_suffixes(
                     processes=processes,
                     tracker=tracker,
                     progress=progress,
+                    found_versions=found_versions,
                 )
-                _update_max_versions(max_versions_by_extension, result.matches[before_match_count:])
+                _update_group_max_versions(
+                    max_versions_by_group,
+                    group.group_key,
+                    result.matches[before_match_count:],
+                )
                 if result.cancelled:
                     return result
         finally:
@@ -309,6 +326,7 @@ def _search_extension_gpu(
     progress: ProgressCallback | None,
     cancel_requested: CancelCallback | None,
     stopped: CancelCallback,
+    found_versions: set[int],
 ) -> _GpuOutcome:
     if options.mode == "auto_detect" and progress:
         progress(f".{extension}: auto_detect using {known_profile_text}.")
@@ -335,6 +353,7 @@ def _search_extension_gpu(
                     current_extension,
                 ),
                 batch_size=options.gpu_batch_size,
+                found_versions=found_versions,
             )
             for raw_path, version, full_path in gpu_matches:
                 matches.append(
@@ -378,6 +397,7 @@ def _search_extension_cpu(
     processes: int,
     tracker: BruteForceProgressTracker,
     progress: ProgressCallback | None,
+    found_versions: set[int],
 ) -> None:
     if options.mode == "auto_detect" and progress:
         progress(f".{extension}: auto_detect using {known_profile_text}.")
@@ -398,17 +418,29 @@ def _search_extension_cpu(
         version_chunk_size=VERSION_CHUNK_SIZE,
         tracker=tracker,
         progress=progress,
+        found_versions=found_versions,
     )
     result.matches.extend(outcome.matches)
     result.cancelled = outcome.cancelled
 
 
-def _initial_max_versions(known_suffixes: SuffixCounts) -> dict[str, int]:
-    out: dict[str, int] = {}
-    for extension, versions in known_suffixes.items():
-        if versions:
-            out[extension] = max(versions)
-    return out
+def _initial_discovered_versions(known_suffixes: SuffixCounts) -> dict[str, set[int]]:
+    return {
+        extension: {int(version) for version in versions}
+        for extension, versions in known_suffixes.items()
+        if versions
+    }
+
+
+def _update_group_max_versions(
+    max_versions_by_group: dict[str, dict[str, int]],
+    group_key: str,
+    matches: list[BruteForceMatch],
+) -> None:
+    if not matches:
+        return
+    group_versions = max_versions_by_group.setdefault(group_key, {})
+    _update_max_versions(group_versions, matches)
 
 
 def _update_max_versions(max_versions: dict[str, int], matches: list[BruteForceMatch]) -> None:

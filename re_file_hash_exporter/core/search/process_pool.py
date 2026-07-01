@@ -64,7 +64,9 @@ class CpuSearchExecutor:
         version_chunk_size: int,
         tracker: BruteForceProgressTracker,
         progress: ProgressCallback | None,
+        found_versions: set[int] | None = None,
     ) -> CpuSearchOutcome:
+        discovered_versions = found_versions if found_versions is not None else set()
         chunk_size = max(1, min(64, len(entries) // (self.processes * 2) + 1))
         entry_chunks = list(_chunks(entries, chunk_size))
         version_chunk_count = max(1, (plan.count + version_chunk_size - 1) // version_chunk_size)
@@ -82,6 +84,7 @@ class CpuSearchExecutor:
                 total_task_chunks,
                 tracker,
                 progress,
+                discovered_versions,
             )
 
         return self._search_pool(
@@ -95,6 +98,7 @@ class CpuSearchExecutor:
             total_task_chunks,
             tracker,
             progress,
+            discovered_versions,
         )
 
     def _search_single_process(
@@ -109,12 +113,17 @@ class CpuSearchExecutor:
         total_task_chunks: int,
         tracker: BruteForceProgressTracker,
         progress: ProgressCallback | None,
+        found_versions: set[int],
     ) -> CpuSearchOutcome:
         init_worker(self.pak_hashes, self.stopped, self.profiles)
         matches: list[BruteForceMatch] = []
+        reported_versions: set[int] = set()
         completed = 0
         try:
-            for version_chunk in plan.iter_chunks(version_chunk_size, self.stopped):
+            for raw_version_chunk in plan.iter_chunks(version_chunk_size, self.stopped):
+                version_chunk = [version for version in raw_version_chunk if version not in found_versions]
+                if not version_chunk:
+                    continue
                 for entry_chunk in entry_chunks:
                     if self.stopped():
                         if progress:
@@ -132,6 +141,7 @@ class CpuSearchExecutor:
                         include_streaming=include_streaming,
                         profiles=self.profiles,
                         stop_requested=self.stopped,
+                        found_versions=found_versions,
                     )
                     tracker.advance_scans(result.scanned_candidates, extension)
                     _record_chunk_matches(
@@ -141,6 +151,7 @@ class CpuSearchExecutor:
                         total_task_chunks,
                         result,
                         progress,
+                        reported_versions,
                     )
         except InterruptedError:
             if progress:
@@ -165,14 +176,23 @@ class CpuSearchExecutor:
         total_task_chunks: int,
         tracker: BruteForceProgressTracker,
         progress: ProgressCallback | None,
+        found_versions: set[int],
     ) -> CpuSearchOutcome:
         if self.executor is None:
             raise RuntimeError("CPU search pool was not initialized.")
 
         matches: list[BruteForceMatch] = []
+        reported_versions: set[int] = set()
         completed = 0
+        shared_found_versions = (
+            self.manager.dict({version: True for version in found_versions}) if self.manager is not None else None
+        )
         try:
-            for version_chunk in plan.iter_chunks(version_chunk_size, self.stopped):
+            for raw_version_chunk in plan.iter_chunks(version_chunk_size, self.stopped):
+                _sync_found_versions(found_versions, shared_found_versions)
+                version_chunk = [version for version in raw_version_chunk if version not in found_versions]
+                if not version_chunk:
+                    continue
                 tasks = [
                     (
                         entry_chunk,
@@ -181,6 +201,7 @@ class CpuSearchExecutor:
                         include_platform_suffixes,
                         language_mode,
                         include_streaming,
+                        shared_found_versions,
                     )
                     for entry_chunk in entry_chunks
                 ]
@@ -201,6 +222,8 @@ class CpuSearchExecutor:
                             continue
                         completed += 1
                         result = future.result()
+                        _sync_found_versions(found_versions, shared_found_versions)
+                        found_versions.update(version for _raw_path, version, _full_path in result.matches)
                         tracker.advance_scans(result.scanned_candidates, extension)
                         _record_chunk_matches(
                             matches,
@@ -209,6 +232,7 @@ class CpuSearchExecutor:
                             total_task_chunks,
                             result,
                             progress,
+                            reported_versions,
                         )
 
                     if self.stopped() and not pending:
@@ -224,6 +248,7 @@ class CpuSearchExecutor:
             tracker.emit(force=True)
             return CpuSearchOutcome(matches, cancelled=True)
 
+        _sync_found_versions(found_versions, shared_found_versions)
         tracker.finish_extension(extension)
         return CpuSearchOutcome(matches)
 
@@ -235,15 +260,22 @@ def _record_chunk_matches(
     total: int,
     result: ChunkResult,
     progress: ProgressCallback | None,
+    reported_versions: set[int],
 ) -> None:
+    new_matches = [
+        (raw_path, version, full_path)
+        for raw_path, version, full_path in result.matches
+        if version not in reported_versions
+    ]
     if progress:
         version_text = _format_version_progress(result.min_version, result.max_version)
-        if result.matches:
-            progress(f".{extension}: chunk {completed}/{total} {version_text} found {len(result.matches)} match(es).")
+        if new_matches:
+            progress(f".{extension}: chunk {completed}/{total} {version_text} found {len(new_matches)} match(es).")
         else:
             progress(f".{extension}: completed chunk {completed}/{total} {version_text}.")
 
-    for raw_path, version, full_path in result.matches:
+    for raw_path, version, full_path in new_matches:
+        reported_versions.add(version)
         out.append(
             BruteForceMatch(
                 extension=extension,
@@ -272,3 +304,8 @@ def _format_version_progress(min_version: int | None, max_version: int | None) -
         return f"version {min_version}"
     return f"versions {min_version}..{max_version}"
 
+
+def _sync_found_versions(found_versions: set[int], shared_found_versions) -> None:
+    if shared_found_versions is None:
+        return
+    found_versions.update(int(version) for version in shared_found_versions.keys())
