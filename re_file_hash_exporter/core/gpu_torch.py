@@ -5,8 +5,9 @@ from typing import Callable, Iterable
 
 from .candidates import candidate_count, iter_candidate_parts, join_candidate_parts
 
-ProgressCallback = Callable[[str], None]
+ProgressCallback = Callable[[object], None]
 CancelCallback = Callable[[], bool]
+ScanProgressCallback = Callable[[int], None]
 
 MASK32 = 0xFFFF_FFFF
 MURMUR3_C1 = 0x85EB_CA6B
@@ -172,6 +173,8 @@ def _iter_candidate_batches(
                 include_streaming,
                 profiles,
             ):
+                if cancel_requested and cancel_requested():
+                    break
                 batch.append((raw_path, version, join_candidate_parts(parts)))
                 if len(batch) >= batch_size:
                     yield batch
@@ -191,6 +194,7 @@ def match_extension_with_torch(
     profiles: dict[str, dict] | None,
     progress: ProgressCallback | None,
     cancel_requested: CancelCallback | None,
+    scan_progress: ScanProgressCallback | None = None,
     batch_size: int = 16384,
 ) -> tuple[list[tuple[str, int, str]], bool]:
     ok, message = torch_cuda_status()
@@ -237,6 +241,10 @@ def match_extension_with_torch(
             batch_versions = [item[1] for item in batch]
             version_text = _format_version_progress(min(batch_versions), max(batch_versions))
             hashes = hash_mixed_batch(full_paths, device="cuda", release_cache=False)
+            if cancel_requested and cancel_requested():
+                return matches, True
+            if scan_progress:
+                scan_progress(len(batch))
             batch_matches = []
             for (raw_path, version, full_path), hash_value in zip(batch, hashes):
                 if hash_value in pak_hashes and full_path not in seen:

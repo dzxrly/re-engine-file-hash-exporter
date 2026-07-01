@@ -60,7 +60,7 @@ def candidate_count(
 ) -> int:
     raw_path_count = 0
     raw_variants = 2 if include_streaming else 1
-    base_variants = 1 + (len(DEFAULT_PLATFORM_SUFFIXES) if include_platform_suffixes else 0)
+    base_variants = len(DEFAULT_PREFIXES) * (1 + (len(DEFAULT_PLATFORM_SUFFIXES) if include_platform_suffixes else 0))
     total = 0
     for raw_path in raw_paths:
         raw_path_count += 1

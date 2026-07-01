@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .constants import IGNORED_RESOURCE_EXTENSIONS
 from .models import BruteForceOptions, SuffixCounts
 
 PROFILE_FILE_NAME = "file_suffix_profiles.json"
 MIN_DATE_CODE_DATE = date(2000, 1, 1)
+CancelCallback = Callable[[], bool]
+_CANCEL_CHECK_INTERVAL = 8192
 
 
 def profile_file_candidates() -> list[Path]:
@@ -56,25 +58,27 @@ def plan_auto_detect_versions(
     known_suffixes: SuffixCounts,
     options: BruteForceOptions,
     profiles: dict[str, dict[str, Any]],
+    cancel_requested: CancelCallback | None = None,
 ) -> list[int]:
+    _raise_if_cancelled(cancel_requested)
     normalized = _normalize_extension(extension)
     profile = profiles.get(normalized)
     suffix_type = _profile_suffix_type(profile)
 
     if suffix_type == "exact":
-        return _range_versions(options, _priority_versions(profile))
+        return _range_versions(options, _priority_versions(profile), cancel_requested)
 
     if suffix_type == "date_code":
         if profile is None:
             return []
-        return _date_code_versions(profile, options)
+        return _date_code_versions(profile, options, cancel_requested)
 
     if suffix_type == "adaptive":
-        adaptive = _adaptive_versions(normalized, known_suffixes, options)
+        adaptive = _adaptive_versions(normalized, known_suffixes, options, cancel_requested)
         if adaptive:
             return adaptive
 
-    return _range_versions(options, _priority_versions(profile))
+    return _range_versions(options, _priority_versions(profile), cancel_requested)
 
 
 def describe_auto_profile(extension: str, profiles: dict[str, dict[str, Any]]) -> str:
@@ -102,7 +106,11 @@ def _profile_suffix_type(profile: dict[str, Any] | None) -> str:
     return str(profile.get("suffix_type") or "numeric").lower()
 
 
-def _range_versions(options: BruteForceOptions, priority_versions: list[int] | None = None) -> list[int]:
+def _range_versions(
+    options: BruteForceOptions,
+    priority_versions: list[int] | None = None,
+    cancel_requested: CancelCallback | None = None,
+) -> list[int]:
     priority = _ordered_unique(priority_versions or [])
     if priority:
         lower_delta = max(0, int(options.min_version))
@@ -113,27 +121,50 @@ def _range_versions(options: BruteForceOptions, priority_versions: list[int] | N
         start = max(0, int(options.min_version))
         end = max(start, int(options.max_version))
 
-    priority = [version for version in priority if start <= version <= end]
-    return _ordered_unique([*priority, *range(start, end + 1)])
+    values: list[int] = []
+    seen: set[int] = set()
+    for version in priority:
+        _raise_if_cancelled(cancel_requested)
+        if start <= version <= end and version not in seen:
+            seen.add(version)
+            values.append(version)
+
+    for index, version in enumerate(range(start, end + 1), start=1):
+        if index % _CANCEL_CHECK_INTERVAL == 0:
+            _raise_if_cancelled(cancel_requested)
+        if version in seen:
+            continue
+        seen.add(version)
+        values.append(version)
+    _raise_if_cancelled(cancel_requested)
+    return values
 
 
 def _adaptive_versions(
     extension: str,
     known_suffixes: SuffixCounts,
     options: BruteForceOptions,
+    cancel_requested: CancelCallback | None = None,
 ) -> list[int]:
     values: set[int] = set()
     for known in known_suffixes.get(extension, {}):
+        _raise_if_cancelled(cancel_requested)
         start = max(0, known - options.neighbor_radius)
         end = known + options.neighbor_radius
-        values.update(range(start, end + 1))
+        for version in range(start, end + 1):
+            values.add(version)
     return sorted(values)
 
 
-def _date_code_versions(profile: dict[str, Any], options: BruteForceOptions) -> list[int]:
+def _date_code_versions(
+    profile: dict[str, Any],
+    options: BruteForceOptions,
+    cancel_requested: CancelCallback | None = None,
+) -> list[int]:
     if str(profile.get("date_format", "YYMMDD")).upper() != "YYMMDD":
         raise ValueError("Only YYMMDD date_code profiles are currently supported.")
 
+    _raise_if_cancelled(cancel_requested)
     base_dates = _priority_dates(profile)
     if base_dates:
         lower_delta = _parse_day_offset(options.date_start, "Date -days")
@@ -148,27 +179,41 @@ def _date_code_versions(profile: dict[str, Any], options: BruteForceOptions) -> 
     priority_tails = [tail for tail in _priority_tails(profile) if 0 <= tail < 10**tail_width]
     remainder_tails = [tail for tail in all_tails if tail not in set(priority_tails)]
     tail_phases = [priority_tails, remainder_tails] if priority_tails else [all_tails]
-    all_dates = _date_range(start_date, end_date)
+    all_dates = _date_range(start_date, end_date, cancel_requested)
     priority_dates = [current for current in base_dates if start_date <= current <= end_date]
     remainder_dates = [current for current in all_dates if current not in set(priority_dates)]
     date_phases = [priority_dates, remainder_dates] if priority_dates else [all_dates]
 
     values: list[int] = []
+    count = 0
     for dates in date_phases:
         for tails in tail_phases:
             for current in dates:
+                _raise_if_cancelled(cancel_requested)
                 date_prefix = current.strftime("%y%m%d")
                 for tail in tails:
                     values.append(int(f"{date_prefix}{tail:0{tail_width}d}"))
+                    count += 1
+                    if count % _CANCEL_CHECK_INTERVAL == 0:
+                        _raise_if_cancelled(cancel_requested)
+    _raise_if_cancelled(cancel_requested)
     return _ordered_unique(values)
 
 
-def _date_range(start_date: date, end_date: date) -> list[date]:
+def _date_range(
+    start_date: date,
+    end_date: date,
+    cancel_requested: CancelCallback | None = None,
+) -> list[date]:
     dates: list[date] = []
     current = start_date
+    count = 0
     while current <= end_date:
         dates.append(current)
         current += timedelta(days=1)
+        count += 1
+        if count % 32 == 0:
+            _raise_if_cancelled(cancel_requested)
     return dates
 
 
@@ -250,3 +295,8 @@ def _ordered_unique(values) -> list[int]:
         seen.add(value)
         out.append(value)
     return out
+
+
+def _raise_if_cancelled(cancel_requested: CancelCallback | None) -> None:
+    if cancel_requested and cancel_requested():
+        raise InterruptedError("Brute-force planning was cancelled.")

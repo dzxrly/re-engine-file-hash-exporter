@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from itertools import islice
@@ -17,12 +18,12 @@ from .candidates import (
 from .constants import IGNORED_RESOURCE_EXTENSIONS
 from .gpu_torch import match_extension_with_torch, torch_cuda_status
 from .hash_utf16 import hash_mixed_parts
-from .models import BruteForceMatch, BruteForceOptions, BruteForceResult, DmpScanResult, SuffixCounts
+from .models import BruteForceMatch, BruteForceOptions, BruteForceProgress, BruteForceResult, DmpScanResult, SuffixCounts
 from .pak_hash import load_hashes_from_paks
 from .path_parser import raw_path_from_reference
 from .version_profiles import describe_auto_profile, load_version_profiles, plan_auto_detect_versions
 
-ProgressCallback = Callable[[str], None]
+ProgressCallback = Callable[[object], None]
 CancelCallback = Callable[[], bool]
 
 _GLOBAL_HASHES: set[int] = set()
@@ -31,9 +32,13 @@ _GLOBAL_VERSIONS: list[int] = []
 _GLOBAL_PROFILES: dict[str, dict] = {}
 
 
-def parse_custom_versions(text: str) -> list[int]:
+_CANCEL_CHECK_INTERVAL = 8192
+
+
+def parse_custom_versions(text: str, cancel_requested: CancelCallback | None = None) -> list[int]:
     values: set[int] = set()
     for item in text.replace("\n", ",").split(","):
+        _raise_if_cancelled(cancel_requested)
         item = item.strip()
         if not item:
             continue
@@ -43,7 +48,10 @@ def parse_custom_versions(text: str) -> list[int]:
             end = int(end_text.strip())
             if end < start:
                 start, end = end, start
-            values.update(range(start, end + 1))
+            for index, value in enumerate(range(start, end + 1), start=1):
+                if index % _CANCEL_CHECK_INTERVAL == 0:
+                    _raise_if_cancelled(cancel_requested)
+                values.add(value)
         else:
             values.add(int(item))
     return sorted(values)
@@ -54,26 +62,49 @@ def plan_versions_for_extension(
     known_suffixes: SuffixCounts,
     options: BruteForceOptions,
     auto_profiles: dict | None = None,
+    cancel_requested: CancelCallback | None = None,
 ) -> list[int]:
+    _raise_if_cancelled(cancel_requested)
     if options.mode == "custom":
-        return parse_custom_versions(options.custom_versions)
+        return parse_custom_versions(options.custom_versions, cancel_requested)
 
     if options.mode == "auto_detect":
         profiles = auto_profiles if auto_profiles is not None else load_version_profiles()
-        return plan_auto_detect_versions(extension, known_suffixes, options, profiles)
+        return plan_auto_detect_versions(extension, known_suffixes, options, profiles, cancel_requested)
 
     if options.mode == "adaptive":
         values: set[int] = set()
         for known in known_suffixes.get(extension, Counter()):
+            _raise_if_cancelled(cancel_requested)
             start = max(0, known - options.neighbor_radius)
             end = known + options.neighbor_radius
-            values.update(range(start, end + 1))
+            for version in range(start, end + 1):
+                values.add(version)
         if values:
             return sorted(values)
 
     start = max(0, int(options.min_version))
     end = max(start, int(options.max_version))
-    return list(range(start, end + 1))
+    return _build_version_range(start, end, cancel_requested)
+
+
+def _build_version_range(
+    start: int,
+    end: int,
+    cancel_requested: CancelCallback | None = None,
+) -> list[int]:
+    versions: list[int] = []
+    for index, version in enumerate(range(start, end + 1), start=1):
+        if index % _CANCEL_CHECK_INTERVAL == 0:
+            _raise_if_cancelled(cancel_requested)
+        versions.append(version)
+    _raise_if_cancelled(cancel_requested)
+    return versions
+
+
+def _raise_if_cancelled(cancel_requested: CancelCallback | None) -> None:
+    if cancel_requested and cancel_requested():
+        raise InterruptedError("Brute-force planning was cancelled.")
 
 
 def collect_raw_paths_by_extension(
@@ -131,20 +162,21 @@ def _worker_stop_requested() -> bool:
     return bool(_GLOBAL_STOP.is_set())
 
 
-def _match_chunk(args) -> tuple[list[tuple[str, int, str]], int | None, int | None]:
+def _match_chunk(args) -> tuple[list[tuple[str, int, str]], int | None, int | None, int]:
     raw_paths, extension, include_platform, language_mode, include_streaming = args
     matches: list[tuple[str, int, str]] = []
     seen: set[str] = set()
     current_min: int | None = None
     current_max: int | None = None
+    scanned_candidates = 0
     for raw_path in raw_paths:
         if _worker_stop_requested():
-            return matches, current_min, current_max
+            return matches, current_min, current_max, scanned_candidates
         for version in _GLOBAL_VERSIONS:
             current_min = version if current_min is None else min(current_min, version)
             current_max = version if current_max is None else max(current_max, version)
             if _worker_stop_requested():
-                return matches, current_min, current_max
+                return matches, current_min, current_max, scanned_candidates
             for parts in iter_candidate_parts(
                 raw_path,
                 extension,
@@ -154,14 +186,17 @@ def _match_chunk(args) -> tuple[list[tuple[str, int, str]], int | None, int | No
                 include_streaming,
                 _GLOBAL_PROFILES,
             ):
+                if _worker_stop_requested():
+                    return matches, current_min, current_max, scanned_candidates
                 hash_value = hash_mixed_parts(parts)
+                scanned_candidates += 1
                 if hash_value in _GLOBAL_HASHES:
                     full_path = join_candidate_parts(parts)
                     if full_path in seen:
                         continue
                     seen.add(full_path)
                     matches.append((raw_path, version, full_path))
-    return matches, current_min, current_max
+    return matches, current_min, current_max, scanned_candidates
 
 
 def _chunks(items: list[str], chunk_size: int):
@@ -180,6 +215,101 @@ def gpu_status_message(requested: bool) -> str | None:
     if ok:
         return message
     return f"GPU requested but unavailable: {message} Falling back to CPU multiprocessing."
+
+
+class _BruteForceProgressTracker:
+    def __init__(
+        self,
+        progress: ProgressCallback | None,
+        total_extensions: int,
+        total_scan_count: int,
+        phase: str = "searching",
+        phase_detail: str = "",
+    ) -> None:
+        self.progress = progress
+        self.total_extensions = total_extensions
+        self.total_scan_count = total_scan_count
+        self.completed_extensions = 0
+        self.completed_scan_count = 0
+        self.current_extension = ""
+        self.phase = phase
+        self.phase_detail = phase_detail
+        self.started_at = time.monotonic()
+        self.last_emit_at = 0.0
+
+    def set_phase(
+        self,
+        phase: str,
+        phase_detail: str = "",
+        total_extensions: int | None = None,
+        total_scan_count: int | None = None,
+        completed_extensions: int = 0,
+        completed_scan_count: int = 0,
+    ) -> None:
+        self.phase = phase
+        self.phase_detail = phase_detail
+        if total_extensions is not None:
+            self.total_extensions = total_extensions
+        if total_scan_count is not None:
+            self.total_scan_count = total_scan_count
+        self.completed_extensions = completed_extensions
+        self.completed_scan_count = completed_scan_count
+        self.current_extension = ""
+        self.emit(force=True)
+
+    def set_planning_progress(
+        self,
+        completed_extensions: int,
+        planned_scan_count: int,
+        current_extension: str,
+        force: bool = False,
+    ) -> None:
+        self.phase = "planning"
+        self.completed_extensions = min(self.total_extensions, completed_extensions)
+        self.completed_scan_count = max(0, planned_scan_count)
+        self.current_extension = current_extension
+        self.phase_detail = f"Planning .{current_extension}" if current_extension else "Planning candidates"
+        self.emit(force=force)
+
+    def advance_scans(self, count: int, current_extension: str) -> None:
+        if count <= 0:
+            return
+        self.phase = "searching"
+        self.phase_detail = f"Searching .{current_extension}" if current_extension else "Searching"
+        self.completed_scan_count = min(self.total_scan_count, self.completed_scan_count + count)
+        self.current_extension = current_extension
+        self.emit()
+
+    def finish_extension(self, current_extension: str) -> None:
+        self.phase = "searching"
+        self.phase_detail = f"Finished .{current_extension}" if current_extension else "Searching"
+        self.completed_extensions = min(self.total_extensions, self.completed_extensions + 1)
+        self.current_extension = current_extension
+        self.emit(force=True)
+
+    def emit(self, force: bool = False) -> None:
+        if not self.progress:
+            return
+        now = time.monotonic()
+        is_complete = (
+            self.completed_extensions >= self.total_extensions
+            or self.completed_scan_count >= self.total_scan_count > 0
+        )
+        if not force and not is_complete and now - self.last_emit_at < 0.2:
+            return
+        self.last_emit_at = now
+        self.progress(
+            BruteForceProgress(
+                completed_extensions=self.completed_extensions,
+                total_extensions=self.total_extensions,
+                completed_scan_count=self.completed_scan_count,
+                total_scan_count=self.total_scan_count,
+                elapsed_seconds=now - self.started_at,
+                current_extension=self.current_extension,
+                phase=self.phase,
+                phase_detail=self.phase_detail,
+            )
+        )
 
 
 def brute_force_suffixes(
@@ -214,16 +344,113 @@ def brute_force_suffixes(
     if stopped():
         return BruteForceResult(cancelled=True)
 
+    tracker = _BruteForceProgressTracker(
+        progress,
+        total_extensions=len(raw_by_ext),
+        total_scan_count=0,
+        phase="loading_paks",
+        phase_detail=f"Loading metadata from {len(pak_paths)} PAK file(s)",
+    )
+    tracker.emit(force=True)
+
     if progress:
         progress("Loading PAK entry hashes...")
     pak_hashes = load_hashes_from_paks(pak_paths, workers=min(8, len(pak_paths)), progress=progress)
     if stopped():
         if progress:
             progress("Stop requested. Brute-force search cancelled before matching.")
+        tracker.set_phase("loading_paks", "Cancelled while loading PAK metadata")
         return BruteForceResult(cancelled=True)
 
     if progress:
         progress(f"Loaded {len(pak_hashes)} unique PAK hashes.")
+        progress(
+            "Planning candidate versions for: "
+            + ", ".join(f".{extension}" for extension in sorted(raw_by_ext))
+        )
+
+    result = BruteForceResult(warnings=warnings)
+    profiles = load_version_profiles()
+    auto_profiles = profiles if options.mode == "auto_detect" else {}
+    language_mode = normalize_language_mode(options.language_mode, options.include_languages)
+    planned_versions: dict[str, list[int]] = {}
+    candidate_counts_by_ext: dict[str, int] = {}
+    planned_scan_count = 0
+    planned_extension_count = 0
+    tracker.set_phase(
+        "planning",
+        "Planning candidate versions",
+        total_extensions=len(raw_by_ext),
+        total_scan_count=0,
+    )
+    for extension, raw_paths in raw_by_ext.items():
+        if stopped():
+            result.cancelled = True
+            if progress:
+                progress("Stop requested. Brute-force planning cancelled.")
+            tracker.set_phase(
+                "planning",
+                "Cancelled while planning candidates",
+                total_extensions=len(raw_by_ext),
+                total_scan_count=0,
+                completed_extensions=planned_extension_count,
+                completed_scan_count=planned_scan_count,
+            )
+            return result
+
+        tracker.set_planning_progress(planned_extension_count, planned_scan_count, extension)
+        if progress:
+            progress(f"Planning .{extension} candidate versions...")
+        try:
+            versions = plan_versions_for_extension(
+                extension,
+                known_suffixes,
+                options,
+                auto_profiles,
+                cancel_requested=stopped,
+            )
+        except InterruptedError:
+            result.cancelled = True
+            if progress:
+                progress("Stop requested. Brute-force planning cancelled.")
+            tracker.set_phase(
+                "planning",
+                "Cancelled while planning candidates",
+                total_extensions=len(raw_by_ext),
+                total_scan_count=0,
+                completed_extensions=planned_extension_count,
+                completed_scan_count=planned_scan_count,
+            )
+            return result
+        planned_versions[extension] = versions
+        candidate_counts_by_ext[extension] = (
+            candidate_count(
+                raw_paths,
+                extension,
+                len(versions),
+                options.include_platform_suffixes,
+                language_mode,
+                options.include_streaming,
+                profiles,
+            )
+            if versions
+            else 0
+        )
+        planned_scan_count += candidate_counts_by_ext[extension]
+        planned_extension_count += 1
+        tracker.set_planning_progress(planned_extension_count, planned_scan_count, extension, force=True)
+
+    tracker.set_phase(
+        "searching",
+        "Searching candidates",
+        total_extensions=len(raw_by_ext),
+        total_scan_count=sum(candidate_counts_by_ext.values()),
+    )
+    if progress:
+        progress(
+            f"Planned {tracker.total_scan_count} path candidate scan(s) across "
+            f"{tracker.total_extensions} extension(s)."
+        )
         progress(
             "Brute-force search started for: "
             + ", ".join(f".{extension}" for extension in sorted(raw_by_ext))
@@ -231,21 +458,19 @@ def brute_force_suffixes(
 
     processes = options.processes if options.processes and options.processes > 0 else os.cpu_count() or 1
     processes = max(1, processes)
-    result = BruteForceResult(warnings=warnings)
-    profiles = load_version_profiles()
-    auto_profiles = profiles if options.mode == "auto_detect" else {}
-    language_mode = normalize_language_mode(options.language_mode, options.include_languages)
 
     for extension, raw_paths in raw_by_ext.items():
         if stopped():
             result.cancelled = True
             if progress:
                 progress("Stop requested. Brute-force search cancelled.")
+            tracker.emit(force=True)
             return result
 
-        versions = plan_versions_for_extension(extension, known_suffixes, options, auto_profiles)
+        versions = planned_versions[extension]
         if not versions:
             result.warnings.append(f"No candidate versions planned for {extension}.")
+            tracker.finish_extension(extension)
             continue
         if options.mode == "auto_detect" and progress:
             progress(f".{extension}: auto_detect using {describe_auto_profile(extension, auto_profiles)}.")
@@ -268,6 +493,10 @@ def brute_force_suffixes(
                     profiles=profiles,
                     progress=progress,
                     cancel_requested=cancel_requested,
+                    scan_progress=lambda count, current_extension=extension: tracker.advance_scans(
+                        count,
+                        current_extension,
+                    ),
                     batch_size=options.gpu_batch_size,
                 )
             except RuntimeError as err:
@@ -289,19 +518,13 @@ def brute_force_suffixes(
                     result.cancelled = True
                     if progress:
                         progress("Brute-force search stopped by user.")
+                    tracker.emit(force=True)
                     return result
+                tracker.finish_extension(extension)
                 continue
 
         if progress:
-            total_candidates = candidate_count(
-                raw_paths,
-                extension,
-                len(versions),
-                options.include_platform_suffixes,
-                language_mode,
-                options.include_streaming,
-                profiles,
-            )
+            total_candidates = candidate_counts_by_ext[extension]
             progress(
                 f"Brute matching .{extension}: {len(raw_paths)} raw paths x {len(versions)} versions "
                 f"({total_candidates} path candidates) using {processes} processes."
@@ -329,9 +552,11 @@ def brute_force_suffixes(
                         result.cancelled = True
                         if progress:
                             progress("Stop requested. Brute-force search cancelled.")
+                        tracker.emit(force=True)
                         return result
                     completed += 1
-                    chunk_matches, min_version, max_version = _match_chunk(task)
+                    chunk_matches, min_version, max_version, scanned_candidates = _match_chunk(task)
+                    tracker.advance_scans(scanned_candidates, extension)
                     _record_chunk_matches(
                         result,
                         extension,
@@ -346,9 +571,11 @@ def brute_force_suffixes(
                         result.cancelled = True
                         if progress:
                             progress("Stop requested. Brute-force search cancelled.")
+                        tracker.emit(force=True)
                         return result
             finally:
                 _clear_worker_state()
+            tracker.finish_extension(extension)
             continue
 
         manager = Manager()
@@ -375,7 +602,8 @@ def brute_force_suffixes(
                     if future.cancelled():
                         continue
                     completed += 1
-                    chunk_matches, min_version, max_version = future.result()
+                    chunk_matches, min_version, max_version, scanned_candidates = future.result()
+                    tracker.advance_scans(scanned_candidates, extension)
                     _record_chunk_matches(
                         result,
                         extension,
@@ -396,7 +624,10 @@ def brute_force_suffixes(
         if result.cancelled:
             if progress:
                 progress("Brute-force search stopped by user.")
+            tracker.emit(force=True)
             return result
+
+        tracker.finish_extension(extension)
 
     return result
 

@@ -78,6 +78,46 @@ class BruteForceMatch:
 
 
 @dataclass(slots=True)
+class BruteForceProgress:
+    completed_extensions: int
+    total_extensions: int
+    completed_scan_count: int
+    total_scan_count: int
+    elapsed_seconds: float
+    current_extension: str = ""
+    phase: str = "searching"
+    phase_detail: str = ""
+
+    @property
+    def remaining_extensions(self) -> int:
+        return max(0, self.total_extensions - self.completed_extensions)
+
+    @property
+    def remaining_scan_count(self) -> int:
+        return max(0, self.total_scan_count - self.completed_scan_count)
+
+    @property
+    def percent(self) -> float:
+        if self.total_scan_count > 0:
+            return min(100.0, (self.completed_scan_count / self.total_scan_count) * 100.0)
+        if self.total_extensions > 0:
+            return min(100.0, (self.completed_extensions / self.total_extensions) * 100.0)
+        return 100.0
+
+    @property
+    def remaining_seconds(self) -> float | None:
+        if self.completed_scan_count <= 0 or self.elapsed_seconds <= 0:
+            return None
+        remaining = self.remaining_scan_count
+        if remaining <= 0:
+            return 0.0
+        scans_per_second = self.completed_scan_count / self.elapsed_seconds
+        if scans_per_second <= 0:
+            return None
+        return remaining / scans_per_second
+
+
+@dataclass(slots=True)
 class BruteForceResult:
     matches: list[BruteForceMatch] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

@@ -8,7 +8,7 @@ from .config_builder import merge_suffix_counts, write_config, write_missing_rep
 from .dmp_scanner import scan_dmp_file
 from .models import BruteForceOptions, BruteForceResult, DmpScanResult, SuffixCounts
 
-ProgressCallback = Callable[[str], None]
+ProgressCallback = Callable[[object], None]
 CancelCallback = Callable[[], bool]
 
 
@@ -53,10 +53,21 @@ class ExportWorkflow:
             cancel_requested=cancel_requested,
         )
         if result.cancelled:
+            found_versions = result.versions_by_extension()
+            version_count = sum(len(versions) for versions in found_versions.values())
+            if found_versions:
+                self.suffix_counts = merge_suffix_counts(self.suffix_counts, found_versions)
+                write_config(output_path, self.suffix_counts)
             if progress:
-                progress(
-                    f"Brute force stopped. {len(result.matches)} partial match(es) were kept in the log but not merged into config."
-                )
+                if found_versions:
+                    progress(
+                        f"Brute force stopped. Merged {version_count} suffix version(s) from "
+                        f"{len(result.matches)} partial match(es) and rewrote config: {output_path}"
+                    )
+                else:
+                    progress("Brute force stopped. No partial matches were found to merge into config.")
+                for warning in result.warnings:
+                    progress(f"Warning: {warning}")
             return result
 
         if result.matches:

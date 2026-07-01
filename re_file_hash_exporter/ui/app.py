@@ -8,9 +8,11 @@ from tkinter import (
     BOTH,
     END,
     EXTENDED,
+    HORIZONTAL,
     LEFT,
+    PanedWindow,
     RIGHT,
-    TOP,
+    VERTICAL,
     BooleanVar,
     Button,
     Checkbutton,
@@ -28,7 +30,7 @@ from tkinter import (
 from tkinter import ttk
 
 from ..core.constants import IGNORED_RESOURCE_EXTENSIONS, LANGUAGE_MODE_LOCALIZED, LANGUAGE_MODE_OFF, LANGUAGE_MODES
-from ..core.models import BruteForceOptions, DmpScanResult
+from ..core.models import BruteForceOptions, BruteForceProgress, DmpScanResult
 from ..core.version_profiles import any_extension_uses_date_profile, default_date_range
 from ..core.workflow import ExportWorkflow
 
@@ -73,14 +75,27 @@ class ExporterApp:
     def _build(self) -> None:
         outer = Frame(self.root, padx=10, pady=10)
         outer.pack(fill=BOTH, expand=True)
-        self._build_inputs(outer)
-        self._build_step1(outer)
-        self._build_step2(outer)
-        self._build_log(outer)
+        self.main_panes = PanedWindow(
+            outer,
+            orient=VERTICAL,
+            sashwidth=6,
+            showhandle=True,
+            sashrelief="raised",
+            bd=0,
+        )
+        self.main_panes.pack(fill=BOTH, expand=True)
 
-    def _build_inputs(self, parent: Frame) -> None:
+        inputs = self._build_inputs(self.main_panes)
+        step1 = self._build_step1(self.main_panes)
+        step2 = self._build_step2(self.main_panes)
+        progress_log = self._build_progress_log(self.main_panes)
+        self.main_panes.add(inputs, minsize=120, height=180)
+        self.main_panes.add(step1, minsize=55, height=70)
+        self.main_panes.add(step2, minsize=180, height=300)
+        self.main_panes.add(progress_log, minsize=120, height=180)
+
+    def _build_inputs(self, parent: Frame) -> LabelFrame:
         box = LabelFrame(parent, text="Inputs", padx=8, pady=8)
-        box.pack(fill="x", side=TOP)
 
         row = Frame(box)
         row.pack(fill="x", pady=3)
@@ -113,21 +128,30 @@ class ExporterApp:
         self.remove_paks_button.pack(fill="x", pady=1)
         self.clear_paks_button = Button(buttons, text="Clear", command=self._clear_paks)
         self.clear_paks_button.pack(fill="x", pady=1)
+        return box
 
-    def _build_step1(self, parent: Frame) -> None:
+    def _build_step1(self, parent: Frame) -> LabelFrame:
         box = LabelFrame(parent, text="Step 1: simple export from DMP suffixes", padx=8, pady=8)
-        box.pack(fill="x", side=TOP, pady=8)
         self.step1_button = Button(box, text="Scan DMP and Export Config", command=self._run_step1)
         self.step1_button.pack(side=LEFT)
         self.step1_summary = Label(box, text="No scan yet.", anchor="w")
         self.step1_summary.pack(side=LEFT, padx=12, fill="x", expand=True)
+        return box
 
-    def _build_step2(self, parent: Frame) -> None:
+    def _build_step2(self, parent: Frame) -> LabelFrame:
         box = LabelFrame(parent, text="Step 2: optional brute-force suffix matching", padx=8, pady=8)
-        box.pack(fill=BOTH, expand=True, side=TOP)
 
-        left = Frame(box)
-        left.pack(side=LEFT, fill=BOTH, expand=True)
+        self.step2_panes = PanedWindow(
+            box,
+            orient=HORIZONTAL,
+            sashwidth=6,
+            showhandle=True,
+            sashrelief="raised",
+            bd=0,
+        )
+        self.step2_panes.pack(fill=BOTH, expand=True)
+
+        left = Frame(self.step2_panes)
         list_header = Frame(left)
         list_header.pack(fill="x")
         Label(list_header, text="Selectable extensions").pack(side=LEFT, anchor="w")
@@ -141,8 +165,10 @@ class ExporterApp:
         self.missing_exts = Listbox(left, height=10, selectmode=EXTENDED)
         self.missing_exts.pack(fill=BOTH, expand=True)
 
-        right = Frame(box)
-        right.pack(side=RIGHT, fill="y", padx=(10, 0))
+        right = Frame(self.step2_panes)
+        self.step2_panes.add(left, minsize=220, width=620)
+        self.step2_panes.add(right, minsize=260, width=300)
+
         Label(right, text="Candidate mode").pack(anchor="w")
         self.mode_combo = ttk.Combobox(
             right,
@@ -189,12 +215,41 @@ class ExporterApp:
         self.step2_button.pack(fill="x", pady=(10, 0))
         self.stop_button = Button(right, text="Stop", command=self._stop_search, state="disabled")
         self.stop_button.pack(fill="x", pady=(4, 0))
+        return box
 
-    def _build_log(self, parent: Frame) -> None:
+    def _build_progress_log(self, parent: Frame) -> PanedWindow:
+        panes = PanedWindow(
+            parent,
+            orient=HORIZONTAL,
+            sashwidth=6,
+            showhandle=True,
+            sashrelief="raised",
+            bd=0,
+        )
+
+        progress_box = LabelFrame(panes, text="Step 2 Progress", padx=8, pady=8)
+        self.step2_progress = ttk.Progressbar(
+            progress_box,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
+            length=260,
+        )
+        self.step2_progress.pack(fill="x", pady=(0, 6))
+        self.step2_progress_detail = Label(progress_box, text="", anchor="w", justify=LEFT, wraplength=360)
+        self.step2_progress_detail.pack(fill=BOTH, expand=True)
+        self._reset_step2_progress()
+
+        log = self._build_log(panes)
+        panes.add(progress_box, minsize=280, width=380)
+        panes.add(log, minsize=320, width=620)
+        return panes
+
+    def _build_log(self, parent: Frame) -> LabelFrame:
         box = LabelFrame(parent, text="Log", padx=8, pady=8)
-        box.pack(fill=BOTH, expand=True, side=TOP, pady=(8, 0))
         self.log = Text(box, height=10, wrap="word")
         self.log.pack(fill=BOTH, expand=True)
+        return box
 
     def _labeled_entry(self, parent: Frame, label: str, variable: StringVar) -> Entry:
         row = Frame(parent)
@@ -354,6 +409,7 @@ class ExporterApp:
                 self._set_step2_enabled(False)
                 self.step2_button.config(text="Matching...")
                 self.stop_button.config(state="normal", text="Stop")
+                self._reset_step2_progress()
                 self._log("Starting brute-force matching...")
             else:
                 self._set_inputs_enabled(True)
@@ -519,7 +575,10 @@ class ExporterApp:
                 return False
         return True
 
-    def _thread_log(self, message: str) -> None:
+    def _thread_log(self, message: object) -> None:
+        if isinstance(message, BruteForceProgress):
+            self.events.put(("brute_progress", message))
+            return
         self.events.put(("log", message))
 
     def _poll_events(self) -> None:
@@ -538,6 +597,8 @@ class ExporterApp:
                     self._log(f"Brute force stopped: {len(payload.matches)} partial matched paths.")
                 else:
                     self._log(f"Brute force finished: {len(payload.matches)} matched paths.")  # type: ignore[union-attr]
+            elif kind == "brute_progress":
+                self._on_brute_progress(payload)  # type: ignore[arg-type]
             elif kind == "error":
                 self._log(str(payload))
                 if self.active_task == "step1":
@@ -567,6 +628,64 @@ class ExporterApp:
         )
         self._log(f"Step 1 also tracked {scan.versioned_unique_path_count} versioned raw paths for optional searches.")
         self._set_step2_enabled(True)
+
+    def _reset_step2_progress(self) -> None:
+        self.step2_progress.config(value=0)
+        self.step2_progress_detail.config(
+            text=(
+                "Stage Idle | 0.0%\n"
+                "Searched 0/0 formats (0 scans) | Remaining 0 formats (0 scans)\n"
+                "Elapsed 00:00:00 | Remaining --:--:--"
+            )
+        )
+
+    def _on_brute_progress(self, progress: BruteForceProgress) -> None:
+        percent = max(0.0, min(100.0, progress.percent))
+        self.step2_progress.config(value=percent)
+        phase = self._format_phase(progress.phase)
+        detail = f" | {progress.phase_detail}" if progress.phase_detail else ""
+        if progress.phase == "loading_paks":
+            body = (
+                f"Stage {phase}{detail} | {percent:.1f}%\n"
+                f"Extensions queued {progress.total_extensions} | PAK metadata loading\n"
+                f"Elapsed {self._format_duration(progress.elapsed_seconds)}"
+            )
+        elif progress.phase == "planning":
+            body = (
+                f"Stage {phase}{detail} | {percent:.1f}%\n"
+                f"Planned {progress.completed_extensions}/{progress.total_extensions} formats "
+                f"({progress.completed_scan_count:,} estimated scans)\n"
+                f"Elapsed {self._format_duration(progress.elapsed_seconds)}"
+            )
+        else:
+            body = (
+                f"Stage {phase}{detail} | {percent:.1f}%\n"
+                f"Searched {progress.completed_extensions}/{progress.total_extensions} formats "
+                f"({progress.completed_scan_count:,} scans) | "
+                f"Remaining {progress.remaining_extensions} formats "
+                f"({progress.remaining_scan_count:,} scans)\n"
+                f"Elapsed {self._format_duration(progress.elapsed_seconds)} | "
+                f"Remaining {self._format_duration(progress.remaining_seconds)}"
+            )
+        self.step2_progress_detail.config(
+            text=body
+        )
+
+    def _format_phase(self, phase: str) -> str:
+        labels = {
+            "loading_paks": "Loading PAK",
+            "planning": "Planning",
+            "searching": "Searching",
+        }
+        return labels.get(phase, phase or "Idle")
+
+    def _format_duration(self, seconds: float | None) -> str:
+        if seconds is None:
+            return "--:--:--"
+        total_seconds = max(0, int(round(seconds)))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     def _log(self, message: str) -> None:
         self.log.insert(END, message.rstrip() + "\n")
