@@ -55,30 +55,76 @@ python main.py cli <config-file.toml>
 配置里的相对路径都以配置文件所在目录为基准解析。`output_path` 未填写时，默认写到同目录的 `config.toml`。
 执行 Step 2 时，CLI 会使用 Rich 在终端底部固定显示进度条，上方继续滚动打印日志。
 
+完整示例：
+
 ```toml
 dmp_path = "dump.DMP"
 output_path = "config.toml"
-pak_dirs = ["paks"]
-# pak_paths = ["re_chunk_000.pak", "re_chunk_000.pak.patch_001.pak"]
+run_step2 = true
+
+pak_paths = []
+pak_dirs = ["*.[pP][aA][kK]"]
+pak_glob = "*.[pP][aA][kK]"
 
 [step2]
-selected_extensions = "all_missing" # 也可以是 "all"、"tex,rcol"、["tex", "rcol"]
+selected_extensions = "all_missing"
 mode = "auto_detect"
 min_version = 0
 max_version = 4096
+custom_versions = ""
+neighbor_radius = 32
+date_start = "0"
+date_end = "365"
 processes = 0
-language_mode = "localized" # localized, off, all
 include_platform_suffixes = true
+language_mode = "localized"
 include_streaming = true
 include_versioned_extensions = false
 request_gpu = false
 gpu_batch_size = 16384
-gpu_devices = "auto" # 也可以写 [0, 1]
+gpu_devices = "auto"
 gpu_workers_per_device = 1
-gpu_batch_sizes = "0:16384,1:16384" # 可选，每卡 batch 覆盖
+gpu_batch_sizes = ""
 ```
 
-如果只想在 CLI 中执行 Step 1，可以设置 `run_step2 = false`。
+推荐结构：输入、输出和 PAK 选择写在顶层，暴力搜索选项写在 `[step2]`。Step 2 选项也可以放在顶层；兼容旧配置的 `[bruteforce]` 表也会被读取，但同时存在时 `[step2]` 优先生效。
+
+顶层字段：
+
+| 字段 | 类型和默认值 | 说明 |
+| --- | --- | --- |
+| `dmp_path` | 字符串，必填 | Step 1 要扫描的 DMP 文件。相对路径以配置文件所在目录为基准解析。 |
+| `output_path` | 字符串，默认 `config.toml` | Step 1 写出、Step 2 更新的输出配置文件。 |
+| `run_step2` | 布尔值，默认 `true` | 设为 `false` 时只执行 Step 1。可以写在顶层，也可以写在 `[step2]`。 |
+| `pak_paths` | 字符串或字符串数组，默认空 | 精确 PAK 文件或 glob 模式。例如 `"base.pak"`、`"*.pak"`、`["base.pak", "patch_001.pak"]`。 |
+| `pak_dirs` | 字符串或字符串数组，默认空 | 要用 `pak_glob` 扫描的目录，也可以直接写 glob 模式，例如 `"*.[pP][aA][kK]"`。 |
+| `pak_dir` | 字符串或字符串数组，默认空 | `pak_dirs` 的兼容别名。新配置建议使用 `pak_dirs`。 |
+| `pak_glob` | 字符串，默认 `*.[pP][aA][kK]` | 仅用于 `pak_dirs` 中的目录项，用来筛选目录里的 PAK 文件。 |
+
+`[step2]` 字段：
+
+| 字段 | 类型和默认值 | 说明 |
+| --- | --- | --- |
+| `selected_extensions` | 字符串、字符串数组或省略 | 要搜索的扩展名。省略或写 `"all_missing"` 表示搜索 Step 1 发现的 missing extensions；`"missing"` 和 `"auto"` 是别名。写 `"all"` 时会包含所有 missing extensions，并在 `include_versioned_extensions = true` 时也包含已经有已知后缀的扩展名。支持 CSV 字符串，例如 `"tex,rcol"`，也支持数组，例如 `["tex", "rcol"]`。扩展名前面的点可写可不写。 |
+| `mode` | 字符串，默认 `"small_range"` | 候选版本规划模式。可选值：`"small_range"`、`"adaptive"`、`"custom"`、`"auto_detect"`。 |
+| `min_version` | 整数，默认 `0` | 在 `small_range` 中表示起始版本号；在 `auto_detect` 的 numeric profile 中表示从预设最小值向下扩展多少。必须非负。 |
+| `max_version` | 整数，默认 `4096` | 在 `small_range` 中表示结束版本号；在 `auto_detect` 的 numeric profile 中表示从预设最大值向上扩展多少。除 `auto_detect` 外必须大于等于 `min_version`。 |
+| `custom_versions` | 字符串，默认空 | 仅用于 `custom` 模式。支持逗号、换行和范围，例如 `"12,18,30-40"`。 |
+| `neighbor_radius` | 整数，默认 `32` | 仅用于 `adaptive` 模式，对已知版本号左右各扩展这个半径。 |
+| `date_start` | 字符串，默认空 | 用于 `auto_detect` 的 `date_code` profile，并且 profile 里存在 `priority_dates` 时生效。含义是 `Date -days`，即向最早优先日期之前扩展多少天。 |
+| `date_end` | 字符串，默认空 | 用于 `auto_detect` 的 `date_code` profile，并且 profile 里存在 `priority_dates` 时生效。含义是 `Date +days`，即向最晚优先日期之后扩展多少天。 |
+| `processes` | 整数，默认 `0` | CPU worker 数量。`0` 表示使用本机 CPU 核心数。 |
+| `include_platform_suffixes` | 布尔值，默认 `true` | 根据路径证据生成 `.STM`、`.X64` 等平台后缀变体。 |
+| `language_mode` | 字符串，默认 `"localized"` | 语言后缀模式。可选值：`"localized"`、`"off"`、`"all"`。 |
+| `include_streaming` | 布尔值，默认 `true` | 根据路径证据生成 `streaming/` 路径变体。 |
+| `include_versioned_extensions` | 布尔值，默认 `false` | 是否允许 Step 2 搜索 Step 1 中已经有已知后缀的扩展名。常和 `selected_extensions = "all"` 搭配。 |
+| `request_gpu` | 布尔值，默认 `false` | 请求使用 torch CUDA 加速。如果没有可用 CUDA 或 `torch`，会自动回退到 CPU 并在日志里说明原因。 |
+| `gpu_batch_size` | 整数，默认 `16384` | 所有选中 CUDA 设备的默认 GPU candidate batch size。当前不会自动调参。 |
+| `gpu_devices` | `"auto"`、整数或整数数组，默认 `[]` | 要使用的 CUDA 设备。`"auto"` 或空值表示使用所有可见 CUDA 设备。例如 `0`、`[0, 1, 2, 3]`、`"0,1"`。 |
+| `gpu_workers_per_device` | 整数，默认 `1` | 每张 CUDA 设备启动几个 worker 进程。建议先用 `1`，更高值可能增加资源竞争。 |
+| `gpu_batch_sizes` | 字符串或 TOML 表，默认空 | 可选的每卡 batch 覆盖。字符串写法：`"0:524288,1:262144"`；TOML 表写法：`{0 = 524288, 1 = 262144}`。值必须为正整数。 |
+
+布尔字段建议直接使用 TOML 的 `true` / `false`，数字字段必须写成 TOML 整数。CLI 也能识别 `"yes"`、`"no"` 这类布尔字符串，但普通布尔值更清楚。
 
 ## 基本流程
 

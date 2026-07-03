@@ -55,30 +55,76 @@ python main.py cli <config-file.toml>
 Relative paths inside the file are resolved from the config file's directory. `output_path` defaults to `config.toml` in the same directory.
 During Step 2, CLI mode uses a Rich progress bar fixed at the bottom of the terminal while logs scroll above it.
 
+Complete example:
+
 ```toml
 dmp_path = "dump.DMP"
 output_path = "config.toml"
-pak_dirs = ["paks"]
-# pak_paths = ["re_chunk_000.pak", "re_chunk_000.pak.patch_001.pak"]
+run_step2 = true
+
+pak_paths = []
+pak_dirs = ["*.[pP][aA][kK]"]
+pak_glob = "*.[pP][aA][kK]"
 
 [step2]
-selected_extensions = "all_missing" # or "all", "tex,rcol", ["tex", "rcol"]
+selected_extensions = "all_missing"
 mode = "auto_detect"
 min_version = 0
 max_version = 4096
+custom_versions = ""
+neighbor_radius = 32
+date_start = "0"
+date_end = "365"
 processes = 0
-language_mode = "localized" # localized, off, all
 include_platform_suffixes = true
+language_mode = "localized"
 include_streaming = true
 include_versioned_extensions = false
 request_gpu = false
 gpu_batch_size = 16384
-gpu_devices = "auto" # or [0, 1]
+gpu_devices = "auto"
 gpu_workers_per_device = 1
-gpu_batch_sizes = "0:16384,1:16384" # optional per-device override
+gpu_batch_sizes = ""
 ```
 
-Set `run_step2 = false` if you want CLI mode to only scan the DMP and write the first-step config.
+Recommended layout: put input/output and PAK selection at the top level, and put brute-force options under `[step2]`. Step 2 options may also be placed at the top level. A legacy `[bruteforce]` table is accepted, but `[step2]` takes precedence when both exist.
+
+Top-level fields:
+
+| Field | Type and default | Description |
+| --- | --- | --- |
+| `dmp_path` | string, required | DMP file to scan in Step 1. Relative paths are resolved from the config file's directory. |
+| `output_path` | string, default `config.toml` | Output config path written by Step 1 and updated by Step 2. |
+| `run_step2` | boolean, default `true` | Set to `false` to only run Step 1. Can be top-level or inside `[step2]`. |
+| `pak_paths` | string or string array, default empty | Exact PAK files or glob patterns. Examples: `"base.pak"`, `"*.pak"`, `["base.pak", "patch_001.pak"]`. |
+| `pak_dirs` | string or string array, default empty | Directories to scan with `pak_glob`, or glob patterns such as `"*.[pP][aA][kK]"`. |
+| `pak_dir` | string or string array, default empty | Compatibility alias for `pak_dirs`. Prefer `pak_dirs` in new configs. |
+| `pak_glob` | string, default `*.[pP][aA][kK]` | File pattern used only for `pak_dirs` entries that are directories. |
+
+`[step2]` fields:
+
+| Field | Type and default | Description |
+| --- | --- | --- |
+| `selected_extensions` | string, string array, or omitted | Extensions to search. Omit or use `"all_missing"` to search missing extensions from Step 1. `"missing"` and `"auto"` are aliases. Use `"all"` to include every missing extension and, when `include_versioned_extensions = true`, versioned extensions too. CSV strings such as `"tex,rcol"` and arrays such as `["tex", "rcol"]` are accepted. Leading dots are optional. |
+| `mode` | string, default `"small_range"` | Candidate version planning mode. Allowed values: `"small_range"`, `"adaptive"`, `"custom"`, `"auto_detect"`. |
+| `min_version` | integer, default `0` | In `small_range`, the inclusive lower version. In `auto_detect` numeric profiles, how far to expand below the preset minimum. Must be non-negative. |
+| `max_version` | integer, default `4096` | In `small_range`, the inclusive upper version. In `auto_detect` numeric profiles, how far to expand above the preset maximum. Must be at least `min_version` except in `auto_detect`. |
+| `custom_versions` | string, default empty | Used only by `custom`. Supports comma/newline separated values and ranges such as `"12,18,30-40"`. |
+| `neighbor_radius` | integer, default `32` | Used by `adaptive`; searches known versions plus and minus this radius. |
+| `date_start` | string, default empty | For `auto_detect` `date_code` profiles with `priority_dates`, this is `Date -days`, the number of days to expand before the earliest priority date. |
+| `date_end` | string, default empty | For `auto_detect` `date_code` profiles with `priority_dates`, this is `Date +days`, the number of days to expand after the latest priority date. |
+| `processes` | integer, default `0` | CPU worker count. `0` uses the machine CPU count. |
+| `include_platform_suffixes` | boolean, default `true` | Generate platform suffix variants such as `.STM` and `.X64` when path evidence suggests they may be needed. |
+| `language_mode` | string, default `"localized"` | Language suffix mode. Allowed values: `"localized"`, `"off"`, `"all"`. |
+| `include_streaming` | boolean, default `true` | Generate `streaming/` path variants when path evidence suggests they may be needed. |
+| `include_versioned_extensions` | boolean, default `false` | Allow Step 2 to search extensions that already had known suffixes in Step 1. Useful with `selected_extensions = "all"`. |
+| `request_gpu` | boolean, default `false` | Request torch CUDA acceleration. If CUDA or torch is unavailable, the search falls back to CPU and logs the reason. |
+| `gpu_batch_size` | integer, default `16384` | Default GPU candidate batch size for every selected CUDA device. This is not auto-tuned. |
+| `gpu_devices` | `"auto"`, integer, or integer array, default `[]` | CUDA devices to use. `"auto"` or an empty value uses every visible CUDA device. Examples: `0`, `[0, 1, 2, 3]`, `"0,1"`. |
+| `gpu_workers_per_device` | integer, default `1` | Number of worker processes per CUDA device. Start with `1`; higher values can increase contention. |
+| `gpu_batch_sizes` | string or TOML table, default empty | Optional per-device batch overrides. String form: `"0:524288,1:262144"`. Table form: `{0 = 524288, 1 = 262144}`. Values must be positive. |
+
+Use TOML booleans (`true` / `false`) and integers for numeric fields. Boolean strings such as `"yes"` and `"no"` are accepted by the CLI, but plain TOML booleans are clearer.
 
 ## Basic Workflow
 

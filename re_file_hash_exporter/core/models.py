@@ -68,6 +68,8 @@ class BruteForceOptions:
     gpu_devices: list[int] = field(default_factory=list)
     gpu_batch_sizes: dict[int, int] = field(default_factory=dict)
     gpu_workers_per_device: int = 1
+    gpu_producers_per_device: int = 0
+    gpu_prefetch_batches_per_device: int = 2
     include_versioned_extensions: bool = False
 
 

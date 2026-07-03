@@ -12,9 +12,18 @@ from re_file_hash_exporter.core.models import BruteForceMatch, BruteForceOptions
 from re_file_hash_exporter.core.pak_hash import PakHashGroup, pak_group_identity
 from re_file_hash_exporter.core.search.candidate_policy import candidate_count_for_entries
 from re_file_hash_exporter.core.search.cpu_matcher import match_entries
-from re_file_hash_exporter.core.search.gpu_batches import iter_prepared_gpu_batches
-from re_file_hash_exporter.core.search.gpu_pool import MultiGpuSearchOutcome, _gpu_process_context, _init_gpu_worker
+from re_file_hash_exporter.core.search.gpu_batches import iter_prepared_gpu_batches, prepare_gpu_bases
+from re_file_hash_exporter.core.search.gpu_pool import (
+    MultiGpuSearchOutcome,
+    _SharedHashView,
+    _create_shared_hash_data,
+    _cuda_owner_devices,
+    _dynamic_version_chunk_size,
+    _gpu_process_context,
+    _init_gpu_worker,
+)
 from re_file_hash_exporter.core.search.path_catalog import RawPathEntry, collect_raw_path_entries_by_extension
+from re_file_hash_exporter.core.version_plan import numeric_range_plan
 
 
 class SearchOptimizationTests(unittest.TestCase):
@@ -90,25 +99,34 @@ class SearchOptimizationTests(unittest.TestCase):
 
     def test_gpu_prepared_batch_units_match_full_path_units(self) -> None:
         entry = RawPathEntry("foo/bar.tex", seen_plain=True, seen_streaming=False)
+        bases = prepare_gpu_bases(
+            entries=[entry],
+            extension="tex",
+            include_platform_suffixes=True,
+            language_mode="off",
+            include_streaming=True,
+            profiles={},
+        )
         batch = next(
             iter_prepared_gpu_batches(
-                entries=[entry],
-                extension="tex",
+                bases=bases,
                 versions=[7],
-                include_platform_suffixes=True,
-                language_mode="off",
-                include_streaming=True,
-                profiles={},
                 batch_size=8,
                 cancel_requested=None,
             )
         )
-        platform_candidate = next(item for item in batch if item.full_path.endswith(".7.STM"))
-        prepared = prepare_mixed_text(platform_candidate.full_path)
+        platform_index = next(
+            index
+            for index in range(len(batch))
+            if batch.full_path_at(index, bases).endswith(".7.STM")
+        )
+        prepared = prepare_mixed_text(batch.full_path_at(platform_index, bases))
 
-        self.assertEqual(platform_candidate.full_path, "natives/STM/foo/bar.tex.7.STM")
-        self.assertEqual(platform_candidate.upper_units, prepared.upper_units)
-        self.assertEqual(platform_candidate.lower_units, prepared.lower_units)
+        self.assertEqual(batch.full_path_at(platform_index, bases), "natives/STM/foo/bar.tex.7.STM")
+        offset = batch.offsets[platform_index]
+        length = batch.lengths[platform_index]
+        self.assertEqual(tuple(batch.upper_units[offset : offset + length]), prepared.upper_units)
+        self.assertEqual(tuple(batch.lower_units[offset : offset + length]), prepared.lower_units)
 
     def test_bruteforce_can_use_cached_pak_groups(self) -> None:
         target = "natives/STM/foo/a.tex.7"
@@ -241,7 +259,8 @@ class SearchOptimizationTests(unittest.TestCase):
         def fake_multi_gpu_search(**kwargs):
             self.assertEqual(kwargs["device_ids"], [0, 1])
             self.assertEqual(kwargs["batch_sizes_by_device"], {0: 111, 1: 222})
-            self.assertEqual(kwargs["workers_per_device"], 2)
+            self.assertEqual(kwargs["producers_per_device"], 2)
+            self.assertEqual(kwargs["prefetch_batches_per_device"], 2)
             kwargs["found_versions"].add(7)
             return MultiGpuSearchOutcome(
                 matches=[BruteForceMatch("tex", 7, "foo/a.tex", target)]
@@ -282,18 +301,21 @@ class SearchOptimizationTests(unittest.TestCase):
         self.assertFalse(result.cancelled)
         self.assertEqual([match.full_path for match in result.matches], [target])
 
-    def test_gpu_worker_initializer_does_not_take_version_chunks(self) -> None:
+    def test_gpu_worker_initializer_does_not_take_version_chunks_or_raw_hash_set(self) -> None:
         parameters = list(inspect.signature(_init_gpu_worker).parameters)
 
         self.assertNotIn("versions", parameters)
+        self.assertNotIn("group_hashes", parameters)
         self.assertEqual(
             parameters,
             [
                 "device_id",
                 "batch_size",
+                "producer_count",
+                "prefetch_batches",
                 "extension",
                 "entries",
-                "group_hashes",
+                "hash_descriptor",
                 "include_platform_suffixes",
                 "language_mode",
                 "include_streaming",
@@ -305,6 +327,40 @@ class SearchOptimizationTests(unittest.TestCase):
 
     def test_gpu_worker_pool_uses_spawn_context_for_cuda(self) -> None:
         self.assertEqual(_gpu_process_context().get_start_method(), "spawn")
+
+    def test_multi_gpu_scheduler_uses_one_cuda_owner_per_device(self) -> None:
+        self.assertEqual(_cuda_owner_devices([0, 0, 1, 2, 1]), [0, 1, 2])
+
+    def test_dynamic_gpu_chunk_size_scales_with_candidate_density(self) -> None:
+        entries = [RawPathEntry("foo/bar.tex", seen_plain=True, seen_streaming=True)]
+        chunk_size = _dynamic_version_chunk_size(
+            entries=entries,
+            extension="tex",
+            plan=numeric_range_plan(0, 10000),
+            batch_sizes_by_device={0: 8},
+            include_platform_suffixes=True,
+            language_mode="off",
+            include_streaming=True,
+            profiles={},
+            max_version_chunk_size=4096,
+            prefetch_batches_per_device=1,
+        )
+
+        self.assertGreaterEqual(chunk_size, 1)
+        self.assertLess(chunk_size, 4096)
+
+    def test_shared_hash_view_membership(self) -> None:
+        shared_hashes = _create_shared_hash_data({7, 3, 99})
+        try:
+            view = _SharedHashView(shared_hashes.descriptor)
+            try:
+                self.assertIn(3, view)
+                self.assertIn(99, view)
+                self.assertNotIn(4, view)
+            finally:
+                view.close()
+        finally:
+            shared_hashes.close()
 
 
 if __name__ == "__main__":

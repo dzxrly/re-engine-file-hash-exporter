@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import math
+import queue
+import threading
 from typing import Callable
 
-from .search.candidate_policy import candidate_count_for_entries
-from .search.gpu_batches import iter_prepared_gpu_batches
+from .search.gpu_batches import (
+    PreparedGpuBase,
+    PreparedGpuBatch,
+    candidate_count_for_prepared_bases,
+    iter_prepared_gpu_batches,
+    prepare_gpu_bases,
+)
 from .search.path_catalog import RawPathEntry
 
 ProgressCallback = Callable[[object], None]
@@ -199,7 +206,7 @@ def hash_mixed_batch(paths: list[str], device: str = "cuda", release_cache: bool
 
 
 def hash_prepared_mixed_batch(
-    prepared_paths: list[tuple[tuple[int, ...], tuple[int, ...]]],
+    prepared_paths: list[tuple[tuple[int, ...], tuple[int, ...]]] | PreparedGpuBatch,
     device: str = "cuda",
     release_cache: bool = True,
 ) -> list[int]:
@@ -209,7 +216,12 @@ def hash_prepared_mixed_batch(
         return []
 
     _set_cuda_device(torch, device)
-    lengths = [len(upper_units) for upper_units, _lower_units in prepared_paths]
+    compact_batch = prepared_paths if isinstance(prepared_paths, PreparedGpuBatch) else None
+    lengths = (
+        [int(length) for length in compact_batch.lengths]
+        if compact_batch is not None
+        else [len(upper_units) for upper_units, _lower_units in prepared_paths]
+    )
     max_len = max(lengths)
     upper_units = None
     lower_units = None
@@ -222,11 +234,21 @@ def hash_prepared_mixed_batch(
         with inference_context():
             upper_units = torch.zeros((len(prepared_paths), max_len), dtype=torch.int32)
             lower_units = torch.zeros((len(prepared_paths), max_len), dtype=torch.int32)
-            for row, (upper_row, lower_row) in enumerate(prepared_paths):
-                if upper_row:
-                    upper_units[row, : len(upper_row)] = torch.tensor(upper_row, dtype=torch.int32)
-                if lower_row:
-                    lower_units[row, : len(lower_row)] = torch.tensor(lower_row, dtype=torch.int32)
+            if compact_batch is not None:
+                for row, length in enumerate(lengths):
+                    if not length:
+                        continue
+                    offset = int(compact_batch.offsets[row])
+                    upper_row = compact_batch.upper_units[offset : offset + length]
+                    lower_row = compact_batch.lower_units[offset : offset + length]
+                    upper_units[row, :length] = torch.tensor(upper_row, dtype=torch.int32)
+                    lower_units[row, :length] = torch.tensor(lower_row, dtype=torch.int32)
+            else:
+                for row, (upper_row, lower_row) in enumerate(prepared_paths):
+                    if upper_row:
+                        upper_units[row, : len(upper_row)] = torch.tensor(upper_row, dtype=torch.int32)
+                    if lower_row:
+                        lower_units[row, : len(lower_row)] = torch.tensor(lower_row, dtype=torch.int32)
 
             upper_units = upper_units.to(device, non_blocking=True)
             lower_units = lower_units.to(device, non_blocking=True)
@@ -263,76 +285,87 @@ def match_extension_with_torch(
     device: str = "cuda",
     is_version_found: VersionFoundCallback | None = None,
     mark_version_found: MarkVersionFoundCallback | None = None,
+    producer_count: int = 1,
+    prefetch_batches: int = 0,
+    prepared_bases: tuple[PreparedGpuBase, ...] | None = None,
 ) -> tuple[list[tuple[str, int, str]], bool]:
     ok, message = torch_cuda_status(_requested_devices_for_device(device))
     if not ok:
         raise RuntimeError(message)
 
     discovered_versions = found_versions if found_versions is not None else set()
+    version_lock = threading.Lock()
 
     def version_found(version: int) -> bool:
-        return version in discovered_versions or bool(is_version_found and is_version_found(version))
+        with version_lock:
+            return version in discovered_versions or bool(is_version_found and is_version_found(version))
+
+    def mark_discovered(version: int) -> None:
+        with version_lock:
+            discovered_versions.add(version)
+        if mark_version_found:
+            mark_version_found(version)
 
     active_versions = [version for version in versions if not version_found(version)]
-    total_candidates = candidate_count_for_entries(
-        entries,
-        extension,
-        len(active_versions),
-        include_platform_suffixes,
-        language_mode,
-        include_streaming,
-        profiles,
-    )
+    if not active_versions:
+        return [], bool(cancel_requested and cancel_requested())
+
+    bases = prepared_bases
+    if bases is None:
+        bases = prepare_gpu_bases(
+            entries,
+            extension,
+            include_platform_suffixes,
+            language_mode,
+            include_streaming,
+            profiles,
+        )
+    total_candidates = candidate_count_for_prepared_bases(bases, len(active_versions))
     total_batches = max(1, math.ceil(total_candidates / batch_size))
     if progress:
         progress(
             f".{extension}: torch CUDA hashing {total_candidates} candidates on {device} "
-            f"in {total_batches} batch(es), batch size {batch_size}."
+            f"in {total_batches} batch(es), batch size {batch_size}, "
+            f"{max(1, int(producer_count))} producer(s), prefetch {max(0, int(prefetch_batches))}."
         )
 
     matches: list[tuple[str, int, str]] = []
     seen: set[str] = set()
     try:
         for batch_index, batch in enumerate(
-            iter_prepared_gpu_batches(
-                entries,
-                extension,
+            _iter_gpu_batches_with_prefetch(
+                bases,
                 active_versions,
-                include_platform_suffixes,
-                language_mode,
-                include_streaming,
-                profiles,
                 batch_size,
                 cancel_requested,
-                discovered_versions,
+                None,
                 is_version_found=version_found,
+                producer_count=producer_count,
+                prefetch_batches=prefetch_batches,
             ),
             start=1,
         ):
             if cancel_requested and cancel_requested():
                 return matches, True
 
-            prepared_units = [(item.upper_units, item.lower_units) for item in batch]
-            batch_versions = [item.version for item in batch]
-            version_text = _format_version_progress(min(batch_versions), max(batch_versions))
-            hashes = hash_prepared_mixed_batch(prepared_units, device=device, release_cache=False)
+            version_text = _format_version_progress(batch.min_version, batch.max_version)
+            hashes = hash_prepared_mixed_batch(batch, device=device, release_cache=False)
             if cancel_requested and cancel_requested():
                 return matches, True
             if scan_progress:
                 scan_progress(len(batch))
             batch_matches = []
-            for item, hash_value in zip(batch, hashes):
-                if version_found(item.version):
+            for index, hash_value in enumerate(hashes):
+                version = int(batch.versions[index])
+                if version_found(version):
                     continue
                 if hash_value in pak_hashes:
-                    full_path = item.full_path
+                    full_path = batch.full_path_at(index, bases)
                     if full_path in seen:
                         continue
                     seen.add(full_path)
-                    discovered_versions.add(item.version)
-                    if mark_version_found:
-                        mark_version_found(item.version)
-                    batch_matches.append((item.raw_path, item.version, full_path))
+                    mark_discovered(version)
+                    batch_matches.append((batch.raw_path_at(index, bases), version, full_path))
             matches.extend(batch_matches)
 
             if progress:
@@ -350,10 +383,112 @@ def match_extension_with_torch(
         release_torch_cuda_cache(device)
 
 
-def _format_version_progress(min_version: int, max_version: int) -> str:
+def _format_version_progress(min_version: int | None, max_version: int | None) -> str:
+    if min_version is None or max_version is None:
+        return "versions unknown"
     if min_version == max_version:
         return f"version {min_version}"
     return f"versions {min_version}..{max_version}"
+
+
+def _iter_gpu_batches_with_prefetch(
+    bases: tuple[PreparedGpuBase, ...],
+    active_versions: list[int],
+    batch_size: int,
+    cancel_requested: CancelCallback | None,
+    found_versions: set[int] | None,
+    is_version_found: VersionFoundCallback,
+    producer_count: int,
+    prefetch_batches: int,
+):
+    producer_count = max(1, int(producer_count or 1))
+    prefetch_batches = max(0, int(prefetch_batches or 0))
+    if producer_count <= 1 and prefetch_batches <= 0:
+        yield from iter_prepared_gpu_batches(
+            bases,
+            active_versions,
+            batch_size,
+            cancel_requested,
+            found_versions,
+            is_version_found=is_version_found,
+        )
+        return
+
+    batch_queue: queue.Queue[PreparedGpuBatch | BaseException | None] = queue.Queue(
+        maxsize=max(1, prefetch_batches)
+    )
+    version_slices = _split_versions_for_producers(active_versions, producer_count)
+    done_count = 0
+
+    def produce(version_slice: list[int]) -> None:
+        try:
+            for batch in iter_prepared_gpu_batches(
+                bases,
+                version_slice,
+                batch_size,
+                cancel_requested,
+                found_versions,
+                is_version_found=is_version_found,
+            ):
+                if cancel_requested and cancel_requested():
+                    break
+                _put_prefetch_item(batch_queue, batch, cancel_requested)
+        except BaseException as exc:
+            _put_prefetch_item(batch_queue, exc, cancel_requested)
+        finally:
+            _put_prefetch_item(batch_queue, None, cancel_requested)
+
+    threads = [
+        threading.Thread(
+            target=produce,
+            args=(version_slice,),
+            name=f"gpu-candidate-producer-{index}",
+            daemon=True,
+        )
+        for index, version_slice in enumerate(version_slices)
+        if version_slice
+    ]
+    if not threads:
+        return
+
+    for thread in threads:
+        thread.start()
+
+    try:
+        while done_count < len(threads):
+            item = batch_queue.get()
+            if item is None:
+                done_count += 1
+                continue
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        for thread in threads:
+            thread.join(timeout=0.2)
+
+
+def _split_versions_for_producers(versions: list[int], producer_count: int) -> list[list[int]]:
+    producer_count = max(1, min(int(producer_count), len(versions) or 1))
+    out = [[] for _index in range(producer_count)]
+    for index, version in enumerate(versions):
+        out[index % producer_count].append(version)
+    return out
+
+
+def _put_prefetch_item(
+    batch_queue: "queue.Queue[PreparedGpuBatch | BaseException | None]",
+    item: PreparedGpuBatch | BaseException | None,
+    cancel_requested: CancelCallback | None,
+) -> None:
+    while True:
+        if cancel_requested and cancel_requested():
+            return
+        try:
+            batch_queue.put(item, timeout=0.1)
+            return
+        except queue.Full:
+            continue
 
 
 def _requested_devices_for_device(device: str) -> list[int] | None:

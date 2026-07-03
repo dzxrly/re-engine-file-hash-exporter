@@ -48,6 +48,8 @@ class CliStep2Settings:
     gpu_devices: list[int] = field(default_factory=list)
     gpu_batch_sizes: dict[int, int] = field(default_factory=dict)
     gpu_workers_per_device: int = 1
+    gpu_producers_per_device: int = 0
+    gpu_prefetch_batches_per_device: int = 2
     include_versioned_extensions: bool = False
 
 
@@ -195,6 +197,8 @@ def load_cli_config(config_path: str | Path) -> CliConfig:
         gpu_devices=_get_gpu_devices(data, step2_data),
         gpu_batch_sizes=_get_gpu_batch_sizes(data, step2_data),
         gpu_workers_per_device=_get_int(data, step2_data, "gpu_workers_per_device", 1),
+        gpu_producers_per_device=_get_int(data, step2_data, "gpu_producers_per_device", 0),
+        gpu_prefetch_batches_per_device=_get_int(data, step2_data, "gpu_prefetch_batches_per_device", 2),
         include_versioned_extensions=_get_bool(data, step2_data, "include_versioned_extensions", False),
     )
     _validate_step2_settings(settings)
@@ -292,6 +296,8 @@ def build_bruteforce_options(settings: CliStep2Settings, selected_extensions: li
         gpu_devices=settings.gpu_devices,
         gpu_batch_sizes=settings.gpu_batch_sizes,
         gpu_workers_per_device=settings.gpu_workers_per_device,
+        gpu_producers_per_device=settings.gpu_producers_per_device,
+        gpu_prefetch_batches_per_device=settings.gpu_prefetch_batches_per_device,
         include_versioned_extensions=settings.include_versioned_extensions,
     )
 
@@ -482,6 +488,10 @@ def _validate_step2_settings(settings: CliStep2Settings) -> None:
         raise ConfigError("gpu_devices must contain non-negative CUDA device indexes.")
     if settings.gpu_workers_per_device <= 0:
         raise ConfigError("gpu_workers_per_device must be a positive integer.")
+    if settings.gpu_producers_per_device < 0:
+        raise ConfigError("gpu_producers_per_device must be >= 0.")
+    if settings.gpu_prefetch_batches_per_device < 0:
+        raise ConfigError("gpu_prefetch_batches_per_device must be >= 0.")
     if any(size <= 0 for size in settings.gpu_batch_sizes.values()):
         raise ConfigError("gpu_batch_sizes values must be positive integers.")
     if any(device < 0 for device in settings.gpu_batch_sizes):

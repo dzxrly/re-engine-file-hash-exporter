@@ -10,6 +10,7 @@ from .gpu_torch import match_extension_with_torch, resolve_cuda_devices
 from .models import BruteForceMatch, BruteForceOptions, BruteForceResult, DmpScanResult, SuffixCounts
 from .pak.cache import PakHashCache
 from .pak_hash import PakHashGroup, load_hash_groups_from_paks
+from .search.candidate_policy import candidate_count_for_entries
 from .search.path_catalog import RawPathEntry, collect_raw_path_entries_by_extension
 from .search.planning import GroupPlan, parse_custom_versions, plan_group, plan_versions_for_extension
 from .search.gpu_pool import search_extension_multi_gpu
@@ -334,14 +335,17 @@ def _search_extension_gpu(
     if options.mode == "auto_detect" and progress:
         progress(f".{extension}: auto_detect using {known_profile_text}.")
     devices = gpu_devices or [0]
-    workers_per_device = max(1, int(options.gpu_workers_per_device or 1))
+    producers_per_device = _gpu_producers_per_device(options)
+    prefetch_batches_per_device = max(0, int(options.gpu_prefetch_batches_per_device or 0))
     batch_sizes_by_device = _gpu_batch_sizes_by_device(options, devices)
-    if len(devices) * workers_per_device > 1:
+    if len(devices) > 1:
         if progress:
             device_text = ", ".join(f"cuda:{device}" for device in devices)
             progress(
                 f"Brute matching .{extension}: {len(entries)} raw paths x {plan.count} versions "
-                f"using multi-GPU torch CUDA on {device_text} ({workers_per_device} worker(s)/device)."
+                f"using multi-GPU torch CUDA on {device_text} "
+                f"(1 CUDA owner/device, {producers_per_device} producer(s)/device, "
+                f"prefetch {prefetch_batches_per_device})."
             )
             progress(f".{extension}: version candidates {_format_candidate_range(plan)} ({plan.count} total).")
         try:
@@ -352,7 +356,8 @@ def _search_extension_gpu(
                 group_hashes=group_hashes,
                 device_ids=devices,
                 batch_sizes_by_device=batch_sizes_by_device,
-                workers_per_device=workers_per_device,
+                producers_per_device=producers_per_device,
+                prefetch_batches_per_device=prefetch_batches_per_device,
                 include_platform_suffixes=options.include_platform_suffixes,
                 language_mode=language_mode,
                 include_streaming=options.include_streaming,
@@ -380,13 +385,25 @@ def _search_extension_gpu(
     if progress:
         progress(
             f"Brute matching .{extension}: {len(entries)} raw paths x {plan.count} versions "
-            f"using torch CUDA on cuda:{devices[0]}."
+            f"using torch CUDA on cuda:{devices[0]} "
+            f"({producers_per_device} producer(s), prefetch {prefetch_batches_per_device})."
         )
         progress(f".{extension}: version candidates {_format_candidate_range(plan)} ({plan.count} total).")
 
     matches: list[BruteForceMatch] = []
     try:
-        for version_chunk in plan.iter_chunks(VERSION_CHUNK_SIZE, stopped):
+        chunk_size = _gpu_version_chunk_size(
+            entries,
+            extension,
+            plan,
+            batch_sizes_by_device.get(devices[0], options.gpu_batch_size),
+            options.include_platform_suffixes,
+            language_mode,
+            options.include_streaming,
+            profiles,
+            prefetch_batches_per_device,
+        )
+        for version_chunk in plan.iter_chunks(chunk_size, stopped):
             gpu_matches, cancelled = match_extension_with_torch(
                 extension=extension,
                 entries=entries,
@@ -405,6 +422,8 @@ def _search_extension_gpu(
                 batch_size=batch_sizes_by_device.get(devices[0], options.gpu_batch_size),
                 found_versions=found_versions,
                 device=f"cuda:{devices[0]}",
+                producer_count=producers_per_device,
+                prefetch_batches=prefetch_batches_per_device,
             )
             for raw_path, version, full_path in gpu_matches:
                 matches.append(
@@ -491,6 +510,41 @@ def _gpu_batch_sizes_by_device(options: BruteForceOptions, devices: list[int]) -
         if device in out:
             out[device] = max(1, int(size))
     return out
+
+
+def _gpu_producers_per_device(options: BruteForceOptions) -> int:
+    explicit = int(options.gpu_producers_per_device or 0)
+    if explicit > 0:
+        return explicit
+    return max(1, int(options.gpu_workers_per_device or 1))
+
+
+def _gpu_version_chunk_size(
+    entries: list[RawPathEntry],
+    extension: str,
+    plan: VersionPlan,
+    batch_size: int,
+    include_platform_suffixes: bool,
+    language_mode: str,
+    include_streaming: bool,
+    profiles: dict[str, dict],
+    prefetch_batches: int,
+) -> int:
+    if plan.count <= 0:
+        return 1
+    per_version_candidates = candidate_count_for_entries(
+        entries,
+        extension,
+        1,
+        include_platform_suffixes,
+        language_mode,
+        include_streaming,
+        profiles,
+    )
+    if per_version_candidates <= 0:
+        return VERSION_CHUNK_SIZE
+    target_candidates = max(1, int(batch_size)) * max(1, int(prefetch_batches or 1))
+    return max(1, min(VERSION_CHUNK_SIZE, target_candidates // per_version_candidates or 1))
 
 
 def _update_group_max_versions(

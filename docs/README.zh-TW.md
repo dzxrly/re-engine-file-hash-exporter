@@ -55,30 +55,76 @@ python main.py cli <config-file.toml>
 配置裡的相對路徑都以配置檔所在目錄為基準解析。`output_path` 未填寫時，預設寫到同目錄的 `config.toml`。
 執行 Step 2 時，CLI 會使用 Rich 在終端底部固定顯示進度條，上方繼續滾動列印日誌。
 
+完整範例：
+
 ```toml
 dmp_path = "dump.DMP"
 output_path = "config.toml"
-pak_dirs = ["paks"]
-# pak_paths = ["re_chunk_000.pak", "re_chunk_000.pak.patch_001.pak"]
+run_step2 = true
+
+pak_paths = []
+pak_dirs = ["*.[pP][aA][kK]"]
+pak_glob = "*.[pP][aA][kK]"
 
 [step2]
-selected_extensions = "all_missing" # 也可以是 "all"、"tex,rcol"、["tex", "rcol"]
+selected_extensions = "all_missing"
 mode = "auto_detect"
 min_version = 0
 max_version = 4096
+custom_versions = ""
+neighbor_radius = 32
+date_start = "0"
+date_end = "365"
 processes = 0
-language_mode = "localized" # localized, off, all
 include_platform_suffixes = true
+language_mode = "localized"
 include_streaming = true
 include_versioned_extensions = false
 request_gpu = false
 gpu_batch_size = 16384
-gpu_devices = "auto" # 也可以寫 [0, 1]
+gpu_devices = "auto"
 gpu_workers_per_device = 1
-gpu_batch_sizes = "0:16384,1:16384" # 可選，每卡 batch 覆蓋
+gpu_batch_sizes = ""
 ```
 
-如果只想在 CLI 中執行 Step 1，可以設定 `run_step2 = false`。
+建議結構：輸入、輸出和 PAK 選擇寫在頂層，暴力搜尋選項寫在 `[step2]`。Step 2 選項也可以放在頂層；相容舊配置的 `[bruteforce]` 表也會被讀取，但同時存在時 `[step2]` 優先生效。
+
+頂層欄位：
+
+| 欄位 | 類型和預設值 | 說明 |
+| --- | --- | --- |
+| `dmp_path` | 字串，必填 | Step 1 要掃描的 DMP 檔案。相對路徑以配置檔所在目錄為基準解析。 |
+| `output_path` | 字串，預設 `config.toml` | Step 1 寫出、Step 2 更新的輸出配置檔。 |
+| `run_step2` | 布林值，預設 `true` | 設為 `false` 時只執行 Step 1。可以寫在頂層，也可以寫在 `[step2]`。 |
+| `pak_paths` | 字串或字串陣列，預設空 | 精確 PAK 檔案或 glob 模式。例如 `"base.pak"`、`"*.pak"`、`["base.pak", "patch_001.pak"]`。 |
+| `pak_dirs` | 字串或字串陣列，預設空 | 要用 `pak_glob` 掃描的目錄，也可以直接寫 glob 模式，例如 `"*.[pP][aA][kK]"`。 |
+| `pak_dir` | 字串或字串陣列，預設空 | `pak_dirs` 的相容別名。新配置建議使用 `pak_dirs`。 |
+| `pak_glob` | 字串，預設 `*.[pP][aA][kK]` | 僅用於 `pak_dirs` 中的目錄項，用來篩選目錄裡的 PAK 檔案。 |
+
+`[step2]` 欄位：
+
+| 欄位 | 類型和預設值 | 說明 |
+| --- | --- | --- |
+| `selected_extensions` | 字串、字串陣列或省略 | 要搜尋的副檔名。省略或寫 `"all_missing"` 表示搜尋 Step 1 發現的 missing extensions；`"missing"` 和 `"auto"` 是別名。寫 `"all"` 時會包含所有 missing extensions，並在 `include_versioned_extensions = true` 時也包含已經有已知後綴的副檔名。支援 CSV 字串，例如 `"tex,rcol"`，也支援陣列，例如 `["tex", "rcol"]`。副檔名前面的點可寫可不寫。 |
+| `mode` | 字串，預設 `"small_range"` | 候選版本規劃模式。可選值：`"small_range"`、`"adaptive"`、`"custom"`、`"auto_detect"`。 |
+| `min_version` | 整數，預設 `0` | 在 `small_range` 中表示起始版本號；在 `auto_detect` 的 numeric profile 中表示從預設最小值向下擴展多少。必須非負。 |
+| `max_version` | 整數，預設 `4096` | 在 `small_range` 中表示結束版本號；在 `auto_detect` 的 numeric profile 中表示從預設最大值向上擴展多少。除 `auto_detect` 外必須大於等於 `min_version`。 |
+| `custom_versions` | 字串，預設空 | 僅用於 `custom` 模式。支援逗號、換行和範圍，例如 `"12,18,30-40"`。 |
+| `neighbor_radius` | 整數，預設 `32` | 僅用於 `adaptive` 模式，對已知版本號左右各擴展這個半徑。 |
+| `date_start` | 字串，預設空 | 用於 `auto_detect` 的 `date_code` profile，並且 profile 裡存在 `priority_dates` 時生效。含義是 `Date -days`，即向最早優先日期之前擴展多少天。 |
+| `date_end` | 字串，預設空 | 用於 `auto_detect` 的 `date_code` profile，並且 profile 裡存在 `priority_dates` 時生效。含義是 `Date +days`，即向最晚優先日期之後擴展多少天。 |
+| `processes` | 整數，預設 `0` | CPU worker 數量。`0` 表示使用本機 CPU 核心數。 |
+| `include_platform_suffixes` | 布林值，預設 `true` | 根據路徑證據產生 `.STM`、`.X64` 等平台後綴變體。 |
+| `language_mode` | 字串，預設 `"localized"` | 語言後綴模式。可選值：`"localized"`、`"off"`、`"all"`。 |
+| `include_streaming` | 布林值，預設 `true` | 根據路徑證據產生 `streaming/` 路徑變體。 |
+| `include_versioned_extensions` | 布林值，預設 `false` | 是否允許 Step 2 搜尋 Step 1 中已經有已知後綴的副檔名。常和 `selected_extensions = "all"` 搭配。 |
+| `request_gpu` | 布林值，預設 `false` | 請求使用 torch CUDA 加速。如果沒有可用 CUDA 或 `torch`，會自動回退到 CPU 並在日誌裡說明原因。 |
+| `gpu_batch_size` | 整數，預設 `16384` | 所有選中 CUDA 裝置的預設 GPU candidate batch size。目前不會自動調參。 |
+| `gpu_devices` | `"auto"`、整數或整數陣列，預設 `[]` | 要使用的 CUDA 裝置。`"auto"` 或空值表示使用所有可見 CUDA 裝置。例如 `0`、`[0, 1, 2, 3]`、`"0,1"`。 |
+| `gpu_workers_per_device` | 整數，預設 `1` | 每張 CUDA 裝置啟動幾個 worker 行程。建議先用 `1`，更高值可能增加資源競爭。 |
+| `gpu_batch_sizes` | 字串或 TOML 表，預設空 | 可選的每卡 batch 覆蓋。字串寫法：`"0:524288,1:262144"`；TOML 表寫法：`{0 = 524288, 1 = 262144}`。值必須為正整數。 |
+
+布林欄位建議直接使用 TOML 的 `true` / `false`，數字欄位必須寫成 TOML 整數。CLI 也能識別 `"yes"`、`"no"` 這類布林字串，但普通布林值更清楚。
 
 ## 基本流程
 

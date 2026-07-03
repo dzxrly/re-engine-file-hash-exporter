@@ -76,6 +76,8 @@ include_streaming = false
 gpu_devices = [0, 1]
 gpu_batch_sizes = "0:524288,1:262144"
 gpu_workers_per_device = 2
+gpu_producers_per_device = 3
+gpu_prefetch_batches_per_device = 4
 """.strip(),
                 encoding="utf-8",
             )
@@ -97,6 +99,8 @@ gpu_workers_per_device = 2
             self.assertEqual(config.step2.gpu_devices, [0, 1])
             self.assertEqual(config.step2.gpu_batch_sizes, {0: 524288, 1: 262144})
             self.assertEqual(config.step2.gpu_workers_per_device, 2)
+            self.assertEqual(config.step2.gpu_producers_per_device, 3)
+            self.assertEqual(config.step2.gpu_prefetch_batches_per_device, 4)
 
     def test_step2_requires_paks_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
