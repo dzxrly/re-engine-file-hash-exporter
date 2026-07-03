@@ -11,6 +11,7 @@ from .version_plan import VersionPlan, date_code_plan, discrete_version_plan, em
 
 PROFILE_FILE_NAME = "file_suffix_profiles.json"
 MIN_DATE_CODE_DATE = date(2000, 1, 1)
+DATE_END_TODAY = "today"
 CancelCallback = Callable[[], bool]
 _CANCEL_CHECK_INTERVAL = 8192
 
@@ -42,6 +43,10 @@ def load_version_profiles() -> dict[str, dict[str, Any]]:
 
 def default_date_range() -> tuple[str, str]:
     return "0", "0"
+
+
+def is_today_date_end(text: str) -> bool:
+    return text.strip().lower() == DATE_END_TODAY
 
 
 def extension_uses_date_profile(extension: str, profiles: dict[str, dict[str, Any]] | None = None) -> bool:
@@ -168,14 +173,7 @@ def _date_code_version_plan(profile: dict[str, Any], options: BruteForceOptions)
     if str(profile.get("date_format", "YYMMDD")).upper() != "YYMMDD":
         raise ValueError("Only YYMMDD date_code profiles are currently supported.")
 
-    base_dates = _priority_dates(profile)
-    if base_dates:
-        lower_delta = _parse_day_offset(options.date_start, "Date -days")
-        upper_delta = _parse_day_offset(options.date_end, "Date +days")
-        start_date = max(MIN_DATE_CODE_DATE, min(base_dates) - timedelta(days=lower_delta))
-        end_date = max(start_date, max(base_dates) + timedelta(days=upper_delta))
-    else:
-        start_date, end_date = _legacy_date_range(profile, options)
+    base_dates, start_date, end_date = _date_code_bounds(profile, options)
 
     return date_code_plan(
         start_date=start_date,
@@ -246,14 +244,7 @@ def _date_code_versions(
         raise ValueError("Only YYMMDD date_code profiles are currently supported.")
 
     _raise_if_cancelled(cancel_requested)
-    base_dates = _priority_dates(profile)
-    if base_dates:
-        lower_delta = _parse_day_offset(options.date_start, "Date -days")
-        upper_delta = _parse_day_offset(options.date_end, "Date +days")
-        start_date = max(MIN_DATE_CODE_DATE, min(base_dates) - timedelta(days=lower_delta))
-        end_date = max(start_date, max(base_dates) + timedelta(days=upper_delta))
-    else:
-        start_date, end_date = _legacy_date_range(profile, options)
+    base_dates, start_date, end_date = _date_code_bounds(profile, options)
 
     tail_width = int(profile.get("tail_width", 3))
     all_tails = list(range(0, 10**tail_width))
@@ -281,6 +272,29 @@ def _date_code_versions(
     return _ordered_unique(values)
 
 
+def _date_code_bounds(profile: dict[str, Any], options: BruteForceOptions) -> tuple[list[date], date, date]:
+    base_dates = _priority_dates(profile)
+    if not base_dates:
+        start_date, end_date = _legacy_date_range(profile, options)
+        return base_dates, start_date, end_date
+
+    lower_delta = _parse_day_offset(options.date_start, "Date -days")
+    start_date = max(MIN_DATE_CODE_DATE, min(base_dates) - timedelta(days=lower_delta))
+    end_date = _date_code_end_date(max(base_dates), options.date_end)
+    return base_dates, start_date, max(start_date, end_date)
+
+
+def _date_code_end_date(latest_priority_date: date, text: str) -> date:
+    if is_today_date_end(text):
+        return max(latest_priority_date, _local_today())
+    upper_delta = _parse_day_offset(text, "Date +days")
+    return latest_priority_date + timedelta(days=upper_delta)
+
+
+def _local_today() -> date:
+    return date.today()
+
+
 def _date_range(
     start_date: date,
     end_date: date,
@@ -303,19 +317,27 @@ def _legacy_date_range(profile: dict[str, Any], options: BruteForceOptions) -> t
     end_text = str(profile.get("default_date_end", start_text)).strip()
     if start_text and end_text:
         start_date = _parse_date_value(start_text, "default_date_start")
-        end_date = _parse_date_value(end_text, "default_date_end")
+        end_date = _parse_date_value_or_today(end_text, "default_date_end")
     else:
         start_date = _parse_date_option(options.date_start, "Date from")
-        end_date = _parse_date_option(options.date_end, "Date to")
+        end_date = _parse_date_option(options.date_end, "Date to", allow_today=True)
     if end_date < start_date:
         start_date, end_date = end_date, start_date
     return start_date, end_date
 
 
-def _parse_date_option(text: str, label: str) -> date:
+def _parse_date_option(text: str, label: str, allow_today: bool = False) -> date:
     value = text.strip()
     if not value:
         raise ValueError(f"{label} is required for auto_detect date_code profiles.")
+    if allow_today:
+        return _parse_date_value_or_today(value, label)
+    return _parse_date_value(value, label)
+
+
+def _parse_date_value_or_today(value: str, label: str) -> date:
+    if is_today_date_end(value):
+        return _local_today()
     return _parse_date_value(value, label)
 
 

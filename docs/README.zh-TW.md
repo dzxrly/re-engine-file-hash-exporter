@@ -74,7 +74,7 @@ max_version = 4096
 custom_versions = ""
 neighbor_radius = 32
 date_start = "0"
-date_end = "365"
+date_end = "today"
 processes = 0
 include_platform_suffixes = true
 language_mode = "localized"
@@ -112,7 +112,7 @@ gpu_batch_sizes = ""
 | `custom_versions` | 字串，預設空 | 僅用於 `custom` 模式。支援逗號、換行和範圍，例如 `"12,18,30-40"`。 |
 | `neighbor_radius` | 整數，預設 `32` | 僅用於 `adaptive` 模式，對已知版本號左右各擴展這個半徑。 |
 | `date_start` | 字串，預設空 | 用於 `auto_detect` 的 `date_code` profile，並且 profile 裡存在 `priority_dates` 時生效。含義是 `Date -days`，即向最早優先日期之前擴展多少天。 |
-| `date_end` | 字串，預設空 | 用於 `auto_detect` 的 `date_code` profile，並且 profile 裡存在 `priority_dates` 時生效。含義是 `Date +days`，即向最晚優先日期之後擴展多少天。 |
+| `date_end` | 字串，預設空 | 用於 `auto_detect` 的 `date_code` profile，並且 profile 裡存在 `priority_dates` 時生效。含義是 `Date +days`，即向最晚優先日期之後擴展多少天。設定為 `"today"` 時，會擴展到本機目前日期；如果目前日期早於預設裡的最晚優先日期，則不會縮小預設範圍。 |
 | `processes` | 整數，預設 `0` | CPU worker 數量。`0` 表示使用本機 CPU 核心數。 |
 | `include_platform_suffixes` | 布林值，預設 `true` | 根據路徑證據產生 `.STM`、`.X64` 等平台後綴變體。 |
 | `language_mode` | 字串，預設 `"localized"` | 語言後綴模式。可選值：`"localized"`、`"off"`、`"all"`。 |
@@ -168,7 +168,7 @@ natives/STM/<raw_path>.<version>.STM
 - `small_range`：逐個嘗試 `Min version` 到 `Max version` 之間的所有版本號，包含兩端。預設範圍是 `0..4096`。這個模式涵蓋最廣，但耗時也可能最長。
 - `adaptive`：根據 Step 1 已經從 DMP 中找到的同副檔名已知版本號，按 `Neighbor radius` 向左右擴展。預設半徑是 `32`，例如已知版本 `100` 會規劃 `68..132`。如果所選副檔名沒有任何已知版本，則退回 `Min version..Max version` 範圍。
 - `custom`：只嘗試 `Custom versions` 中手動填寫的版本號。可以用逗號或換行分隔，也可以寫範圍，例如 `12, 18, 30-40`。程式會去重並排序。這個模式會忽略 `Min version`、`Max version` 和 `Neighbor radius`。
-- `auto_detect`：從專案根目錄的 `file_suffix_profiles.json` 讀取預設，並按所選副檔名分別規劃版本號。`numeric` 類型把 `priority_versions` 當作基準範圍：`Min version` 從預設下界向下擴展，`Max version` 從預設上界向上擴展。例如預設是 `2..38`，`Min version = 10` 且 `Max version = 4096` 時，會搜尋 `0..4134`。`date_code` 類型把 `priority_dates` 當作基準日期範圍；`Date -days` 向前擴展日期下界，`Date +days` 向後擴展日期上界，並優先嘗試 `priority_tails`，再嘗試剩餘的 `000..999` 尾號。
+- `auto_detect`：從專案根目錄的 `file_suffix_profiles.json` 讀取預設，並按所選副檔名分別規劃版本號。`numeric` 類型把 `priority_versions` 當作基準範圍：`Min version` 從預設下界向下擴展，`Max version` 從預設上界向上擴展。例如預設是 `2..38`，`Min version = 10` 且 `Max version = 4096` 時，會搜尋 `0..4134`。`date_code` 類型把 `priority_dates` 當作基準日期範圍；`Date -days` 向前擴展日期下界，`Date +days` 向後擴展日期上界，`Date +days = today` 會使用本機目前日期作為上界，並優先嘗試 `priority_tails`，再嘗試剩餘的 `000..999` 尾號。
 
 一般建議：同時搜尋多種不同檔案類型時，優先試 `auto_detect`；Step 1 已經找到相關已知版本時可試 `adaptive`；需要掃得更廣時用 `small_range`；已經知道可能版本號時用 `custom`，速度會更可控。
 

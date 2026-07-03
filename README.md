@@ -74,7 +74,7 @@ max_version = 4096
 custom_versions = ""
 neighbor_radius = 32
 date_start = "0"
-date_end = "365"
+date_end = "today"
 processes = 0
 include_platform_suffixes = true
 language_mode = "localized"
@@ -112,7 +112,7 @@ Top-level fields:
 | `custom_versions` | string, default empty | Used only by `custom`. Supports comma/newline separated values and ranges such as `"12,18,30-40"`. |
 | `neighbor_radius` | integer, default `32` | Used by `adaptive`; searches known versions plus and minus this radius. |
 | `date_start` | string, default empty | For `auto_detect` `date_code` profiles with `priority_dates`, this is `Date -days`, the number of days to expand before the earliest priority date. |
-| `date_end` | string, default empty | For `auto_detect` `date_code` profiles with `priority_dates`, this is `Date +days`, the number of days to expand after the latest priority date. |
+| `date_end` | string, default empty | For `auto_detect` `date_code` profiles with `priority_dates`, this is `Date +days`, the number of days to expand after the latest priority date. Use `"today"` to expand through the local system date without shrinking the preset priority range. |
 | `processes` | integer, default `0` | CPU worker count. `0` uses the machine CPU count. |
 | `include_platform_suffixes` | boolean, default `true` | Generate platform suffix variants such as `.STM` and `.X64` when path evidence suggests they may be needed. |
 | `language_mode` | string, default `"localized"` | Language suffix mode. Allowed values: `"localized"`, `"off"`, `"all"`. |
@@ -168,7 +168,7 @@ Candidate generation is profile-guided. Step 1 keeps light path evidence for eac
 - `small_range`: tries every version from `Min version` to `Max version`, inclusive. The default range is `0..4096`. This is the broadest option, but it can take the longest.
 - `adaptive`: uses known suffix versions found by Step 1 for the same extension, then expands around each known version by `Neighbor radius`. With the default radius `32`, a known version `100` plans `68..132`. If the selected extension has no known version, it falls back to the `Min version..Max version` range.
 - `custom`: tries only the values entered in `Custom versions`. Use commas or new lines to separate values, and use ranges such as `12, 18, 30-40`. The values are deduplicated and sorted. In this mode, `Min version`, `Max version`, and `Neighbor radius` are ignored.
-- `auto_detect`: reads `file_suffix_profiles.json` from the project root and plans versions per selected extension. `numeric` profiles use `priority_versions` as the baseline range: `Min version` subtracts from the preset lower bound, and `Max version` adds to the preset upper bound. For example, a preset `2..38` with `Min version = 10` and `Max version = 4096` searches `0..4134`. `date_code` profiles use `priority_dates` as the baseline date range; `Date -days` expands the lower date bound, `Date +days` expands the upper date bound, and `priority_tails` are tried before the remaining `000..999` tails.
+- `auto_detect`: reads `file_suffix_profiles.json` from the project root and plans versions per selected extension. `numeric` profiles use `priority_versions` as the baseline range: `Min version` subtracts from the preset lower bound, and `Max version` adds to the preset upper bound. For example, a preset `2..38` with `Min version = 10` and `Max version = 4096` searches `0..4134`. `date_code` profiles use `priority_dates` as the baseline date range; `Date -days` expands the lower date bound, `Date +days` expands the upper date bound, `Date +days = today` uses the local system date as the upper bound, and `priority_tails` are tried before the remaining `000..999` tails.
 
 As a rule of thumb, start with `auto_detect` when searching several different file types, use `adaptive` when Step 1 has found related known versions, use `small_range` when you need a broader search, and use `custom` when you already know the likely version numbers.
 

@@ -69,6 +69,7 @@ pak_dirs = ["paks"]
 selected_extensions = ["tex", ".rcol"]
 mode = "custom"
 custom_versions = "7"
+date_end = "today"
 processes = 1
 language_mode = "off"
 include_platform_suffixes = false
@@ -92,6 +93,7 @@ gpu_prefetch_batches_per_device = 4
             self.assertEqual(config.step2.selected_extensions, ["tex", "rcol"])
             self.assertEqual(config.step2.mode, "custom")
             self.assertEqual(config.step2.custom_versions, "7")
+            self.assertEqual(config.step2.date_end, "today")
             self.assertEqual(config.step2.processes, 1)
             self.assertEqual(config.step2.language_mode, "off")
             self.assertFalse(config.step2.include_platform_suffixes)

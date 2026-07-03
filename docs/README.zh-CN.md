@@ -74,7 +74,7 @@ max_version = 4096
 custom_versions = ""
 neighbor_radius = 32
 date_start = "0"
-date_end = "365"
+date_end = "today"
 processes = 0
 include_platform_suffixes = true
 language_mode = "localized"
@@ -112,7 +112,7 @@ gpu_batch_sizes = ""
 | `custom_versions` | 字符串，默认空 | 仅用于 `custom` 模式。支持逗号、换行和范围，例如 `"12,18,30-40"`。 |
 | `neighbor_radius` | 整数，默认 `32` | 仅用于 `adaptive` 模式，对已知版本号左右各扩展这个半径。 |
 | `date_start` | 字符串，默认空 | 用于 `auto_detect` 的 `date_code` profile，并且 profile 里存在 `priority_dates` 时生效。含义是 `Date -days`，即向最早优先日期之前扩展多少天。 |
-| `date_end` | 字符串，默认空 | 用于 `auto_detect` 的 `date_code` profile，并且 profile 里存在 `priority_dates` 时生效。含义是 `Date +days`，即向最晚优先日期之后扩展多少天。 |
+| `date_end` | 字符串，默认空 | 用于 `auto_detect` 的 `date_code` profile，并且 profile 里存在 `priority_dates` 时生效。含义是 `Date +days`，即向最晚优先日期之后扩展多少天。设置为 `"today"` 时，会扩展到本机当前日期；如果当前日期早于预设里的最晚优先日期，则不会缩小预设范围。 |
 | `processes` | 整数，默认 `0` | CPU worker 数量。`0` 表示使用本机 CPU 核心数。 |
 | `include_platform_suffixes` | 布尔值，默认 `true` | 根据路径证据生成 `.STM`、`.X64` 等平台后缀变体。 |
 | `language_mode` | 字符串，默认 `"localized"` | 语言后缀模式。可选值：`"localized"`、`"off"`、`"all"`。 |
@@ -168,7 +168,7 @@ natives/STM/<raw_path>.<version>.STM
 - `small_range`：逐个尝试 `Min version` 到 `Max version` 之间的所有版本号，包含两端。默认范围是 `0..4096`。这个模式覆盖最广，但耗时也可能最长。
 - `adaptive`：根据 Step 1 已经从 DMP 中找到的同扩展名已知版本号，按 `Neighbor radius` 向左右扩展。默认半径是 `32`，例如已知版本 `100` 会规划 `68..132`。如果所选扩展名没有任何已知版本，则退回 `Min version..Max version` 范围。
 - `custom`：只尝试 `Custom versions` 中手动填写的版本号。可以用逗号或换行分隔，也可以写范围，例如 `12, 18, 30-40`。程序会去重并排序。这个模式会忽略 `Min version`、`Max version` 和 `Neighbor radius`。
-- `auto_detect`：从项目根目录的 `file_suffix_profiles.json` 读取预设，并按所选扩展名分别规划版本号。`numeric` 类型把 `priority_versions` 当作基准范围：`Min version` 从预设下界向下扩展，`Max version` 从预设上界向上扩展。例如预设是 `2..38`，`Min version = 10` 且 `Max version = 4096` 时，会搜索 `0..4134`。`date_code` 类型把 `priority_dates` 当作基准日期范围；`Date -days` 向前扩展日期下界，`Date +days` 向后扩展日期上界，并优先尝试 `priority_tails`，再尝试剩余的 `000..999` 尾号。
+- `auto_detect`：从项目根目录的 `file_suffix_profiles.json` 读取预设，并按所选扩展名分别规划版本号。`numeric` 类型把 `priority_versions` 当作基准范围：`Min version` 从预设下界向下扩展，`Max version` 从预设上界向上扩展。例如预设是 `2..38`，`Min version = 10` 且 `Max version = 4096` 时，会搜索 `0..4134`。`date_code` 类型把 `priority_dates` 当作基准日期范围；`Date -days` 向前扩展日期下界，`Date +days` 向后扩展日期上界，`Date +days = today` 会使用本机当前日期作为上界，并优先尝试 `priority_tails`，再尝试剩余的 `000..999` 尾号。
 
 一般建议：同时搜索多种不同文件类型时，优先试 `auto_detect`；Step 1 已经找到相关已知版本时可试 `adaptive`；需要扫得更广时用 `small_range`；已经知道可能版本号时用 `custom`，速度会更可控。
 

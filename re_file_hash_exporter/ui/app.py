@@ -31,7 +31,12 @@ from tkinter import ttk
 
 from ..core.constants import IGNORED_RESOURCE_EXTENSIONS, LANGUAGE_MODE_LOCALIZED, LANGUAGE_MODE_OFF, LANGUAGE_MODES
 from ..core.models import BruteForceOptions, BruteForceProgress, DmpScanResult
-from ..core.version_profiles import any_extension_uses_date_profile, default_date_range
+from ..core.version_profiles import (
+    DATE_END_TODAY,
+    any_extension_uses_date_profile,
+    default_date_range,
+    is_today_date_end,
+)
 from ..core.workflow import ExportWorkflow
 
 
@@ -190,7 +195,7 @@ class ExporterApp:
         self.custom_versions_entry = self._labeled_entry(right, "Custom versions", self.custom_versions)
         self.date_options = Frame(right)
         self.date_start_entry = self._labeled_entry(self.date_options, "Date -days", self.date_start)
-        self.date_end_entry = self._labeled_entry(self.date_options, "Date +days", self.date_end)
+        self.date_end_entry, self.date_today_button = self._date_end_controls(self.date_options)
         self.processes_entry = self._labeled_entry(right, "Processes", self.processes)
 
         self.platform_check = Checkbutton(right, text="Platform suffixes", variable=self.include_platform)
@@ -282,6 +287,19 @@ class ExporterApp:
         entry.pack(side=RIGHT)
         return entry
 
+    def _date_end_controls(self, parent: Frame) -> tuple[Entry, Button]:
+        row = Frame(parent)
+        row.pack(fill="x", pady=2)
+        Label(row, text="Date +days", width=14, anchor="w").pack(side=LEFT)
+        today_button = Button(row, text="Today", command=self._set_date_end_today, width=6)
+        today_button.pack(side=RIGHT)
+        entry = Entry(row, textvariable=self.date_end, width=10)
+        entry.pack(side=RIGHT, padx=(0, 4))
+        return entry, today_button
+
+    def _set_date_end_today(self) -> None:
+        self.date_end.set(DATE_END_TODAY)
+
     def _default_date_range(self) -> tuple[str, str]:
         try:
             return default_date_range()
@@ -338,6 +356,7 @@ class ExporterApp:
             self.custom_versions_entry,
             self.date_start_entry,
             self.date_end_entry,
+            self.date_today_button,
             self.processes_entry,
             self.platform_check,
             self.language_mode_combo,
@@ -655,14 +674,21 @@ class ExporterApp:
         if not needs_dates:
             return True
 
-        for label, value in (("Date -days", self.date_start.get()), ("Date +days", self.date_end.get())):
+        for label, value, allow_today in (
+            ("Date -days", self.date_start.get(), False),
+            ("Date +days", self.date_end.get(), True),
+        ):
+            if allow_today and is_today_date_end(value):
+                continue
             try:
                 days = int(value.strip() or 0)
             except ValueError:
-                messagebox.showerror("Invalid date range", f"{label} must be a non-negative integer.")
+                suffix = " or today" if allow_today else ""
+                messagebox.showerror("Invalid date range", f"{label} must be a non-negative integer{suffix}.")
                 return False
             if days < 0:
-                messagebox.showerror("Invalid date range", f"{label} must be a non-negative integer.")
+                suffix = " or today" if allow_today else ""
+                messagebox.showerror("Invalid date range", f"{label} must be a non-negative integer{suffix}.")
                 return False
         return True
 
