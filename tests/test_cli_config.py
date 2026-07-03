@@ -27,6 +27,7 @@ class FakeRichProgress:
         self.stopped = False
         self.added_tasks: list[dict] = []
         self.updates: list[dict] = []
+        self.resets: list[dict] = []
 
     def start(self) -> None:
         self.started = True
@@ -40,6 +41,9 @@ class FakeRichProgress:
 
     def update(self, task_id, **kwargs) -> None:
         self.updates.append({"task_id": task_id, **kwargs})
+
+    def reset(self, task_id, **kwargs) -> None:
+        self.resets.append({"task_id": task_id, **kwargs})
 
 
 class CliConfigTests(unittest.TestCase):
@@ -225,6 +229,36 @@ gpu_prefetch_batches_per_device = 4
         self.assertEqual(fake_progress.updates[0]["scans"], "scans 50/100")
         self.assertEqual(fake_progress.updates[0]["phase"], "Searching .tex")
         self.assertEqual(fake_progress.console.messages, ["MATCH .tex.7 -> natives/STM/foo/a.tex.7"])
+
+    def test_step2_progress_renderer_resets_rich_eta_when_phase_progress_rewinds(self) -> None:
+        fake_progress = FakeRichProgress()
+        planning_done = BruteForceProgress(
+            completed_extensions=2,
+            total_extensions=2,
+            completed_scan_count=500,
+            total_scan_count=0,
+            elapsed_seconds=3.0,
+            phase="planning",
+            phase_detail="Planning .tex",
+        )
+        search_started = BruteForceProgress(
+            completed_extensions=0,
+            total_extensions=2,
+            completed_scan_count=0,
+            total_scan_count=1000,
+            elapsed_seconds=3.1,
+            phase="searching",
+            phase_detail="Searching base.pak",
+        )
+
+        with Step2ProgressRenderer(progress_factory=lambda: fake_progress) as renderer:
+            renderer(planning_done)
+            renderer(search_started)
+
+        self.assertEqual(fake_progress.updates[0]["completed"], 100.0)
+        self.assertEqual(fake_progress.resets, [{"task_id": 42, "total": 100.0, "completed": 0.0}])
+        self.assertEqual(fake_progress.updates[1]["completed"], 0.0)
+        self.assertEqual(fake_progress.updates[1]["phase"], "Searching base.pak")
 
     def test_step2_progress_renderer_falls_back_when_rich_is_missing(self) -> None:
         out = StringIO()

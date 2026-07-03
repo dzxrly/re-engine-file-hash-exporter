@@ -77,6 +77,7 @@ class Step2ProgressRenderer:
         self.progress: Any | None = None
         self.task_id: Any | None = None
         self.using_rich = False
+        self._last_rich_completed: float | None = None
 
     def __enter__(self) -> "Step2ProgressRenderer":
         try:
@@ -102,6 +103,7 @@ class Step2ProgressRenderer:
             scans="scans 0/0",
         )
         self.using_rich = True
+        self._last_rich_completed = 0.0
         return self
 
     def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
@@ -125,14 +127,27 @@ class Step2ProgressRenderer:
             print(_format_progress_line(progress), file=self.fallback_stream, flush=True)
             return
 
+        completed = max(0.0, min(100.0, progress.percent))
+        if self._rich_progress_moved_backwards(completed):
+            self._reset_rich_progress(completed)
+
         self.progress.update(
             self.task_id,
-            completed=max(0.0, min(100.0, progress.percent)),
+            completed=completed,
             phase=_format_progress_phase(progress),
             bar=_format_ascii_bar(progress.percent),
             extensions=f"ext {progress.completed_extensions}/{progress.total_extensions}",
             scans=f"scans {progress.completed_scan_count:,}/{progress.total_scan_count:,}",
         )
+        self._last_rich_completed = completed
+
+    def _rich_progress_moved_backwards(self, completed: float) -> bool:
+        return self._last_rich_completed is not None and completed < self._last_rich_completed
+
+    def _reset_rich_progress(self, completed: float) -> None:
+        reset = getattr(self.progress, "reset", None)
+        if reset is not None and self.task_id is not None:
+            reset(self.task_id, total=100.0, completed=completed)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
