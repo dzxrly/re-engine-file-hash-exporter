@@ -8,6 +8,7 @@ from .candidate_policy import iter_candidate_bases
 from .path_catalog import RawPathEntry
 
 CancelCallback = Callable[[], bool]
+VersionFoundCallback = Callable[[int], bool]
 
 
 @dataclass(slots=True)
@@ -36,9 +37,14 @@ def iter_prepared_gpu_batches(
     batch_size: int,
     cancel_requested: CancelCallback | None,
     found_versions: set[int] | None = None,
+    is_version_found: VersionFoundCallback | None = None,
 ):
     batch: list[PreparedGpuCandidate] = []
     discovered_versions = found_versions if found_versions is not None else set()
+
+    def version_found(version: int) -> bool:
+        return version in discovered_versions or bool(is_version_found and is_version_found(version))
+
     bases = [
         _PreparedGpuBase.from_base(base)
         for entry in entries
@@ -53,19 +59,19 @@ def iter_prepared_gpu_batches(
     ]
     suffix_cache = _PreparedSuffixCache()
     for version in versions:
-        if version in discovered_versions:
+        if version_found(version):
             continue
         if cancel_requested and cancel_requested():
             break
         version_text = str(version)
         version_prepared = suffix_cache.prepare(version_text)
         for base in bases:
-            if version in discovered_versions:
+            if version_found(version):
                 break
             if cancel_requested and cancel_requested():
                 break
             for candidate in _iter_gpu_candidates(base, version, version_text, version_prepared, suffix_cache):
-                if version in discovered_versions:
+                if version_found(version):
                     break
                 batch.append(candidate)
                 if len(batch) >= batch_size:

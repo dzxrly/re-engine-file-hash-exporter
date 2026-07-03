@@ -20,8 +20,9 @@ It scans resource paths from a selected `.DMP` file, exports known versioned suf
 - Use CPU multiprocessing for brute-force matching.
 - Reuse CPU worker pools per PAK group and reuse precomputed UTF-16 hash prefix states.
 - Use torch CUDA acceleration when `GPU acceleration (CUDA only)` is enabled and a CUDA-enabled `torch` install is available.
+- Use multiple CUDA devices in parallel when more than one GPU is selected or visible.
 - Reduce GPU-side search overhead by batching pre-encoded UTF-16 candidate units instead of complete path strings.
-- Show `GPU batch size` only when GPU mode is requested.
+- Show GPU-specific options only when GPU mode is requested.
 - Allow stopping brute-force matching at any time.
 - Lock file inputs and step options while a scan or brute-force task is running.
 
@@ -38,9 +39,46 @@ pip install -r requirements.txt
 ## Run
 
 ```powershell
-cd C:\Software\mhws\re-file-hash-exporter
 python main.py
 ```
+
+## CLI Mode
+
+CLI mode reads a TOML config file and runs Step 1, then Step 2, without opening the GUI:
+
+```powershell
+python main.py --cli <config-file.toml>
+# or
+python main.py cli <config-file.toml>
+```
+
+Relative paths inside the file are resolved from the config file's directory. `output_path` defaults to `config.toml` in the same directory.
+During Step 2, CLI mode uses a Rich progress bar fixed at the bottom of the terminal while logs scroll above it.
+
+```toml
+dmp_path = "dump.DMP"
+output_path = "config.toml"
+pak_dirs = ["paks"]
+# pak_paths = ["re_chunk_000.pak", "re_chunk_000.pak.patch_001.pak"]
+
+[step2]
+selected_extensions = "all_missing" # or "all", "tex,rcol", ["tex", "rcol"]
+mode = "auto_detect"
+min_version = 0
+max_version = 4096
+processes = 0
+language_mode = "localized" # localized, off, all
+include_platform_suffixes = true
+include_streaming = true
+include_versioned_extensions = false
+request_gpu = false
+gpu_batch_size = 16384
+gpu_devices = "auto" # or [0, 1]
+gpu_workers_per_device = 1
+gpu_batch_sizes = "0:16384,1:16384" # optional per-device override
+```
+
+Set `run_step2 = false` if you want CLI mode to only scan the DMP and write the first-step config.
 
 ## Basic Workflow
 
@@ -127,3 +165,20 @@ If GPU utilization is low and VRAM usage is comfortable, try increasing it gradu
 If CUDA reports out-of-memory errors or the system becomes unstable, lower the value by one step. Larger batches are not always faster because candidate generation and UTF-16 encoding still involve CPU-side work.
 
 If `torch` is missing, not CUDA-enabled, or no CUDA device is available, the tool falls back to CPU multiprocessing and logs the reason.
+
+## Multi-GPU Search
+
+When GPU mode is enabled, `GPU devices = auto` uses every visible CUDA device. You can limit the search to specific devices with values such as `0,1` in the GUI or `gpu_devices = [0, 1]` in CLI config.
+
+The search scheduler assigns version chunks dynamically to GPU workers, so faster devices receive more work as they finish earlier. Matches are merged in the main process and discovered suffix versions are shared between workers to reduce duplicate work.
+
+Use `gpu_batch_size` as the default batch size for every selected GPU. If devices have different VRAM, set per-device overrides:
+
+```toml
+[step2]
+request_gpu = true
+gpu_devices = [0, 1]
+gpu_batch_size = 262144
+gpu_batch_sizes = "0:524288,1:131072"
+gpu_workers_per_device = 1
+```

@@ -20,8 +20,9 @@
 - CPU 模式使用多行程平行匹配。
 - CPU 搜尋會依 PAK 群組重用 worker，並重用預先計算的 UTF-16 hash 前綴狀態。
 - 勾選 `GPU acceleration (CUDA only)` 且安裝 CUDA 可用的 `torch` 時，會使用 torch CUDA 加速。
+- 選擇或偵測到多張 CUDA 顯示卡時，可平行使用多卡加速。
 - GPU 搜尋會批次處理預編碼的 UTF-16 候選片段，減少完整路徑字串建構與重複編碼。
-- 只有啟用 GPU 模式時才顯示 `GPU batch size` 設定。
+- 只有啟用 GPU 模式時才顯示 GPU 專用設定。
 - 暴力匹配過程中可隨時點擊 `Stop` 停止搜尋。
 - 掃描或暴力匹配執行時會鎖定檔案輸入和任務選項，避免中途修改輸入。
 
@@ -38,9 +39,46 @@ pip install -r requirements.txt
 ## 執行
 
 ```powershell
-cd C:\Software\mhws\re-file-hash-exporter
 python main.py
 ```
+
+## CLI 模式
+
+CLI 模式會讀取指定的 TOML 配置檔，不開啟 GUI，直接依序執行 Step 1 和 Step 2：
+
+```powershell
+python main.py --cli <config-file.toml>
+# 或
+python main.py cli <config-file.toml>
+```
+
+配置裡的相對路徑都以配置檔所在目錄為基準解析。`output_path` 未填寫時，預設寫到同目錄的 `config.toml`。
+執行 Step 2 時，CLI 會使用 Rich 在終端底部固定顯示進度條，上方繼續滾動列印日誌。
+
+```toml
+dmp_path = "dump.DMP"
+output_path = "config.toml"
+pak_dirs = ["paks"]
+# pak_paths = ["re_chunk_000.pak", "re_chunk_000.pak.patch_001.pak"]
+
+[step2]
+selected_extensions = "all_missing" # 也可以是 "all"、"tex,rcol"、["tex", "rcol"]
+mode = "auto_detect"
+min_version = 0
+max_version = 4096
+processes = 0
+language_mode = "localized" # localized, off, all
+include_platform_suffixes = true
+include_streaming = true
+include_versioned_extensions = false
+request_gpu = false
+gpu_batch_size = 16384
+gpu_devices = "auto" # 也可以寫 [0, 1]
+gpu_workers_per_device = 1
+gpu_batch_sizes = "0:16384,1:16384" # 可選，每卡 batch 覆蓋
+```
+
+如果只想在 CLI 中執行 Step 1，可以設定 `run_step2 = false`。
 
 ## 基本流程
 
@@ -127,3 +165,20 @@ CPU 匹配會預先計算 `natives/STM/<raw_path>.` 這類長路徑前綴的 has
 如果出現 CUDA out of memory、系統明顯卡頓或不穩定，就降低一檔。更大的 batch 不一定總是更快，因為候選路徑產生和 UTF-16 編碼仍有 CPU 端開銷。
 
 如果未安裝 `torch`、`torch` 不是 CUDA 版，或目前沒有可用 CUDA 裝置，程式會自動降級到 CPU 多行程，並在日誌中提示原因。
+
+## 多 GPU 搜尋
+
+啟用 GPU 模式後，`GPU devices = auto` 會使用所有可見 CUDA 裝置。也可以在 GUI 中填寫 `0,1`，或在 CLI 配置裡寫 `gpu_devices = [0, 1]` 來限制使用的顯示卡。
+
+搜尋調度器會把版本號 chunk 動態分發給 GPU worker，速度更快的顯示卡完成後會繼續取得後續任務。匹配結果由主行程合併，已經發現的版本號會在 worker 之間共享，用來減少重複搜尋。
+
+`gpu_batch_size` 是所有顯示卡的預設 batch size。如果不同顯示卡顯存不同，可以設定每卡覆蓋：
+
+```toml
+[step2]
+request_gpu = true
+gpu_devices = [0, 1]
+gpu_batch_size = 262144
+gpu_batch_sizes = "0:524288,1:131072"
+gpu_workers_per_device = 1
+```

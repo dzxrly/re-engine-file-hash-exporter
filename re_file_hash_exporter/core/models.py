@@ -65,6 +65,9 @@ class BruteForceOptions:
     include_streaming: bool = True
     request_gpu: bool = False
     gpu_batch_size: int = 16384
+    gpu_devices: list[int] = field(default_factory=list)
+    gpu_batch_sizes: dict[int, int] = field(default_factory=dict)
+    gpu_workers_per_device: int = 1
     include_versioned_extensions: bool = False
 
 

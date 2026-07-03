@@ -61,7 +61,11 @@ class ExporterApp:
         self.language_mode = StringVar(value=LANGUAGE_MODE_LOCALIZED)
         self.include_streaming = BooleanVar(value=True)
         self.request_gpu = BooleanVar(value=False)
+        self.show_gpu_advanced = BooleanVar(value=False)
         self.gpu_batch_size = StringVar(value="16384")
+        self.gpu_devices = StringVar(value="auto")
+        self.gpu_batch_sizes = StringVar(value="")
+        self.gpu_workers_per_device = StringVar(value="1")
         self.show_versioned_extensions = BooleanVar(value=False)
         self.pak_paths: list[Path] = []
         self.last_scan: DmpScanResult | None = None
@@ -211,6 +215,25 @@ class ExporterApp:
         self.gpu_check.pack(anchor="w")
         self.gpu_options = Frame(right)
         self.gpu_batch_entry = self._labeled_entry(self.gpu_options, "GPU batch size", self.gpu_batch_size)
+        self.gpu_advanced_check = Checkbutton(
+            self.gpu_options,
+            text="Advanced GPU options",
+            variable=self.show_gpu_advanced,
+            command=self._toggle_gpu_advanced_options,
+        )
+        self.gpu_advanced_check.pack(anchor="w", pady=(2, 0))
+        self.gpu_advanced_options = Frame(self.gpu_options)
+        self.gpu_devices_entry = self._labeled_entry(self.gpu_advanced_options, "GPU devices", self.gpu_devices)
+        self.gpu_batch_sizes_entry = self._labeled_entry(
+            self.gpu_advanced_options,
+            "GPU batch sizes",
+            self.gpu_batch_sizes,
+        )
+        self.gpu_workers_entry = self._labeled_entry(
+            self.gpu_advanced_options,
+            "GPU workers/device",
+            self.gpu_workers_per_device,
+        )
         self.step2_button = Button(right, text="Run Brute Force", command=self._run_step2)
         self.step2_button.pack(fill="x", pady=(10, 0))
         self.stop_button = Button(right, text="Stop", command=self._stop_search, state="disabled")
@@ -277,8 +300,16 @@ class ExporterApp:
     def _toggle_gpu_options(self) -> None:
         if self.request_gpu.get():
             self.gpu_options.pack(fill="x", pady=(2, 0), before=self.step2_button)
+            self._toggle_gpu_advanced_options()
         else:
+            self.gpu_advanced_options.pack_forget()
             self.gpu_options.pack_forget()
+
+    def _toggle_gpu_advanced_options(self) -> None:
+        if self.request_gpu.get() and self.show_gpu_advanced.get():
+            self.gpu_advanced_options.pack(fill="x", pady=(2, 0))
+        else:
+            self.gpu_advanced_options.pack_forget()
 
     def _set_inputs_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -313,6 +344,10 @@ class ExporterApp:
             self.streaming_check,
             self.gpu_check,
             self.gpu_batch_entry,
+            self.gpu_advanced_check,
+            self.gpu_devices_entry,
+            self.gpu_batch_sizes_entry,
+            self.gpu_workers_entry,
             self.show_versioned_check,
             self.step2_button,
         ):
@@ -512,6 +547,9 @@ class ExporterApp:
 
         output = Path(self.output_path.get().strip())
         gpu_batch_size = 16384
+        gpu_devices: list[int] = []
+        gpu_batch_sizes: dict[int, int] = {}
+        gpu_workers_per_device = 1
         if self.request_gpu.get():
             try:
                 gpu_batch_size = int(self.gpu_batch_size.get() or 16384)
@@ -520,6 +558,16 @@ class ExporterApp:
                 return
             if gpu_batch_size <= 0:
                 messagebox.showerror("Invalid GPU batch size", "GPU batch size must be a positive integer.")
+                return
+            try:
+                gpu_devices = self._parse_gpu_devices()
+                gpu_batch_sizes = self._parse_gpu_batch_sizes()
+                gpu_workers_per_device = int(self.gpu_workers_per_device.get() or 1)
+            except ValueError as err:
+                messagebox.showerror("Invalid GPU options", str(err))
+                return
+            if gpu_workers_per_device <= 0:
+                messagebox.showerror("Invalid GPU options", "GPU workers/device must be a positive integer.")
                 return
 
         options = BruteForceOptions(
@@ -538,6 +586,9 @@ class ExporterApp:
             include_streaming=self.include_streaming.get(),
             request_gpu=self.request_gpu.get(),
             gpu_batch_size=gpu_batch_size,
+            gpu_devices=gpu_devices,
+            gpu_batch_sizes=gpu_batch_sizes,
+            gpu_workers_per_device=gpu_workers_per_device,
             include_versioned_extensions=self.show_versioned_extensions.get(),
         )
 
@@ -552,6 +603,46 @@ class ExporterApp:
             self.events.put(("brute", result))
 
         self._run_in_worker(task, "step2")
+
+    def _parse_gpu_devices(self) -> list[int]:
+        text = self.gpu_devices.get().strip()
+        if not text or text.lower() == "auto":
+            return []
+        devices: list[int] = []
+        seen: set[int] = set()
+        for part in text.replace("\n", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            device = int(part)
+            if device < 0:
+                raise ValueError("GPU devices must be non-negative CUDA device indexes.")
+            if device in seen:
+                continue
+            seen.add(device)
+            devices.append(device)
+        return devices
+
+    def _parse_gpu_batch_sizes(self) -> dict[int, int]:
+        text = self.gpu_batch_sizes.get().strip()
+        if not text:
+            return {}
+        sizes: dict[int, int] = {}
+        for part in text.replace("\n", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if ":" not in part:
+                raise ValueError("GPU batch sizes must use device:size entries, such as 0:524288,1:262144.")
+            device_text, size_text = part.split(":", 1)
+            device = int(device_text.strip())
+            size = int(size_text.strip())
+            if device < 0:
+                raise ValueError("GPU batch size device indexes must be non-negative.")
+            if size <= 0:
+                raise ValueError("GPU batch sizes must be positive integers.")
+            sizes[device] = size
+        return sizes
 
     def _validate_auto_detect_date_options(self, selected: list[str]) -> bool:
         if self.mode.get() != "auto_detect":

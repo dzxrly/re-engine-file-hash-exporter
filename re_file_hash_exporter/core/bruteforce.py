@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .candidates import normalize_language_mode
-from .gpu_torch import match_extension_with_torch, torch_cuda_status
+from .gpu_torch import match_extension_with_torch, resolve_cuda_devices
 from .models import BruteForceMatch, BruteForceOptions, BruteForceResult, DmpScanResult, SuffixCounts
 from .pak.cache import PakHashCache
 from .pak_hash import PakHashGroup, load_hash_groups_from_paks
 from .search.path_catalog import RawPathEntry, collect_raw_path_entries_by_extension
 from .search.planning import GroupPlan, parse_custom_versions, plan_group, plan_versions_for_extension
+from .search.gpu_pool import search_extension_multi_gpu
 from .search.process_pool import CpuSearchExecutor
 from .search.progress import BruteForceProgressTracker, ProgressCallback
 from .version_plan import VersionPlan
@@ -38,13 +39,13 @@ def collect_raw_paths_by_extension(
     }
 
 
-def gpu_status_message(requested: bool) -> str | None:
+def gpu_status_message(requested: bool, requested_devices: list[int] | None = None) -> tuple[bool, str | None, list[int]]:
     if not requested:
-        return None
-    ok, message = torch_cuda_status()
+        return False, None, []
+    ok, message, devices = resolve_cuda_devices(requested_devices)
     if ok:
-        return message
-    return f"GPU requested but unavailable: {message} Falling back to CPU multiprocessing."
+        return True, message, devices
+    return False, f"GPU requested but unavailable: {message} Falling back to CPU multiprocessing.", []
 
 
 def brute_force_suffixes(
@@ -61,9 +62,9 @@ def brute_force_suffixes(
 
     warnings: list[str] = []
     use_gpu = False
-    gpu_message = gpu_status_message(options.request_gpu)
+    gpu_devices: list[int] = []
+    use_gpu, gpu_message, gpu_devices = gpu_status_message(options.request_gpu, options.gpu_devices)
     if gpu_message:
-        use_gpu = gpu_message.startswith("torch CUDA backend ready:")
         if not use_gpu:
             warnings.append(gpu_message)
         if progress:
@@ -195,6 +196,7 @@ def brute_force_suffixes(
                         cancel_requested=cancel_requested,
                         stopped=stopped,
                         found_versions=found_versions,
+                        gpu_devices=gpu_devices,
                     )
                     result.matches.extend(gpu_outcome.matches)
                     use_gpu = gpu_outcome.gpu_available
@@ -327,11 +329,59 @@ def _search_extension_gpu(
     cancel_requested: CancelCallback | None,
     stopped: CancelCallback,
     found_versions: set[int],
+    gpu_devices: list[int],
 ) -> _GpuOutcome:
     if options.mode == "auto_detect" and progress:
         progress(f".{extension}: auto_detect using {known_profile_text}.")
+    devices = gpu_devices or [0]
+    workers_per_device = max(1, int(options.gpu_workers_per_device or 1))
+    batch_sizes_by_device = _gpu_batch_sizes_by_device(options, devices)
+    if len(devices) * workers_per_device > 1:
+        if progress:
+            device_text = ", ".join(f"cuda:{device}" for device in devices)
+            progress(
+                f"Brute matching .{extension}: {len(entries)} raw paths x {plan.count} versions "
+                f"using multi-GPU torch CUDA on {device_text} ({workers_per_device} worker(s)/device)."
+            )
+            progress(f".{extension}: version candidates {_format_candidate_range(plan)} ({plan.count} total).")
+        try:
+            outcome = search_extension_multi_gpu(
+                extension=extension,
+                entries=entries,
+                plan=plan,
+                group_hashes=group_hashes,
+                device_ids=devices,
+                batch_sizes_by_device=batch_sizes_by_device,
+                workers_per_device=workers_per_device,
+                include_platform_suffixes=options.include_platform_suffixes,
+                language_mode=language_mode,
+                include_streaming=options.include_streaming,
+                profiles=profiles,
+                version_chunk_size=VERSION_CHUNK_SIZE,
+                tracker=tracker,
+                progress=progress,
+                stopped=stopped,
+                found_versions=found_versions,
+            )
+        except InterruptedError:
+            if progress:
+                progress("Stop requested. Brute-force search cancelled.")
+            tracker.emit(force=True)
+            return _GpuOutcome([], gpu_available=True, completed=True, cancelled=True)
+        warning = "; ".join(outcome.warnings) if outcome.warnings else None
+        return _GpuOutcome(
+            matches=outcome.matches,
+            gpu_available=outcome.completed,
+            completed=outcome.completed,
+            cancelled=outcome.cancelled,
+            warning=warning,
+        )
+
     if progress:
-        progress(f"Brute matching .{extension}: {len(entries)} raw paths x {plan.count} versions using torch CUDA.")
+        progress(
+            f"Brute matching .{extension}: {len(entries)} raw paths x {plan.count} versions "
+            f"using torch CUDA on cuda:{devices[0]}."
+        )
         progress(f".{extension}: version candidates {_format_candidate_range(plan)} ({plan.count} total).")
 
     matches: list[BruteForceMatch] = []
@@ -352,8 +402,9 @@ def _search_extension_gpu(
                     count,
                     current_extension,
                 ),
-                batch_size=options.gpu_batch_size,
+                batch_size=batch_sizes_by_device.get(devices[0], options.gpu_batch_size),
                 found_versions=found_versions,
+                device=f"cuda:{devices[0]}",
             )
             for raw_path, version, full_path in gpu_matches:
                 matches.append(
@@ -430,6 +481,16 @@ def _initial_discovered_versions(known_suffixes: SuffixCounts) -> dict[str, set[
         for extension, versions in known_suffixes.items()
         if versions
     }
+
+
+def _gpu_batch_sizes_by_device(options: BruteForceOptions, devices: list[int]) -> dict[int, int]:
+    default = max(1, int(options.gpu_batch_size or 16384))
+    out = {int(device): default for device in devices}
+    for device, size in options.gpu_batch_sizes.items():
+        device = int(device)
+        if device in out:
+            out[device] = max(1, int(size))
+    return out
 
 
 def _update_group_max_versions(

@@ -10,6 +10,8 @@ from .search.path_catalog import RawPathEntry
 ProgressCallback = Callable[[object], None]
 CancelCallback = Callable[[], bool]
 ScanProgressCallback = Callable[[int], None]
+VersionFoundCallback = Callable[[int], bool]
+MarkVersionFoundCallback = Callable[[int], None]
 
 MASK32 = 0xFFFF_FFFF
 MURMUR3_C1 = 0x85EB_CA6B
@@ -23,26 +25,49 @@ MURMUR3_BLOCK_C2 = 0x1B87_3593
 MURMUR3_BLOCK_R1 = 15
 
 
-def torch_cuda_status() -> tuple[bool, str]:
+def resolve_cuda_devices(requested_devices: list[int] | None = None) -> tuple[bool, str, list[int]]:
     try:
         import torch
     except Exception as err:
-        return False, f"torch is not installed or failed to import: {err}"
+        return False, f"torch is not installed or failed to import: {err}", []
 
     if not torch.cuda.is_available():
-        return False, "torch is installed, but CUDA is not available."
+        return False, "torch is installed, but CUDA is not available.", []
 
-    name = torch.cuda.get_device_name(0)
-    return True, f"torch CUDA backend ready: {name}"
+    count = torch.cuda.device_count()
+    if count <= 0:
+        return False, "torch reports CUDA available, but no CUDA devices were found.", []
+
+    if requested_devices:
+        devices: list[int] = []
+        seen: set[int] = set()
+        for device in requested_devices:
+            device = int(device)
+            if device < 0 or device >= count:
+                return False, f"Requested CUDA device {device}, but available devices are 0..{count - 1}.", []
+            if device in seen:
+                continue
+            seen.add(device)
+            devices.append(device)
+    else:
+        devices = list(range(count))
+
+    names = ", ".join(f"cuda:{device} {torch.cuda.get_device_name(device)}" for device in devices)
+    return True, f"torch CUDA backend ready: {len(devices)} device(s): {names}", devices
 
 
-def release_torch_cuda_cache() -> None:
+def torch_cuda_status(requested_devices: list[int] | None = None) -> tuple[bool, str]:
+    ok, message, _devices = resolve_cuda_devices(requested_devices)
+    return ok, message
+
+
+def release_torch_cuda_cache(device: str = "cuda") -> None:
     try:
         import torch
     except Exception:
         return
 
-    _release_device_cache(torch, "cuda")
+    _release_device_cache(torch, device)
 
 
 def _release_device_cache(torch, device: str) -> None:
@@ -138,6 +163,7 @@ def hash_mixed_batch(paths: list[str], device: str = "cuda", release_cache: bool
     if not paths:
         return []
 
+    _set_cuda_device(torch, device)
     encoded = [path.encode("utf-16le") for path in paths]
     lengths = [len(data) // 2 for data in encoded]
     max_len = max(lengths)
@@ -182,6 +208,7 @@ def hash_prepared_mixed_batch(
     if not prepared_paths:
         return []
 
+    _set_cuda_device(torch, device)
     lengths = [len(upper_units) for upper_units, _lower_units in prepared_paths]
     max_len = max(lengths)
     upper_units = None
@@ -233,13 +260,20 @@ def match_extension_with_torch(
     scan_progress: ScanProgressCallback | None = None,
     batch_size: int = 16384,
     found_versions: set[int] | None = None,
+    device: str = "cuda",
+    is_version_found: VersionFoundCallback | None = None,
+    mark_version_found: MarkVersionFoundCallback | None = None,
 ) -> tuple[list[tuple[str, int, str]], bool]:
-    ok, message = torch_cuda_status()
+    ok, message = torch_cuda_status(_requested_devices_for_device(device))
     if not ok:
         raise RuntimeError(message)
 
     discovered_versions = found_versions if found_versions is not None else set()
-    active_versions = [version for version in versions if version not in discovered_versions]
+
+    def version_found(version: int) -> bool:
+        return version in discovered_versions or bool(is_version_found and is_version_found(version))
+
+    active_versions = [version for version in versions if not version_found(version)]
     total_candidates = candidate_count_for_entries(
         entries,
         extension,
@@ -252,7 +286,7 @@ def match_extension_with_torch(
     total_batches = max(1, math.ceil(total_candidates / batch_size))
     if progress:
         progress(
-            f".{extension}: torch CUDA hashing {total_candidates} candidates "
+            f".{extension}: torch CUDA hashing {total_candidates} candidates on {device} "
             f"in {total_batches} batch(es), batch size {batch_size}."
         )
 
@@ -271,6 +305,7 @@ def match_extension_with_torch(
                 batch_size,
                 cancel_requested,
                 discovered_versions,
+                is_version_found=version_found,
             ),
             start=1,
         ):
@@ -280,14 +315,14 @@ def match_extension_with_torch(
             prepared_units = [(item.upper_units, item.lower_units) for item in batch]
             batch_versions = [item.version for item in batch]
             version_text = _format_version_progress(min(batch_versions), max(batch_versions))
-            hashes = hash_prepared_mixed_batch(prepared_units, device="cuda", release_cache=False)
+            hashes = hash_prepared_mixed_batch(prepared_units, device=device, release_cache=False)
             if cancel_requested and cancel_requested():
                 return matches, True
             if scan_progress:
                 scan_progress(len(batch))
             batch_matches = []
             for item, hash_value in zip(batch, hashes):
-                if item.version in discovered_versions:
+                if version_found(item.version):
                     continue
                 if hash_value in pak_hashes:
                     full_path = item.full_path
@@ -295,6 +330,8 @@ def match_extension_with_torch(
                         continue
                     seen.add(full_path)
                     discovered_versions.add(item.version)
+                    if mark_version_found:
+                        mark_version_found(item.version)
                     batch_matches.append((item.raw_path, item.version, full_path))
             matches.extend(batch_matches)
 
@@ -310,10 +347,27 @@ def match_extension_with_torch(
 
         return matches, bool(cancel_requested and cancel_requested())
     finally:
-        release_torch_cuda_cache()
+        release_torch_cuda_cache(device)
 
 
 def _format_version_progress(min_version: int, max_version: int) -> str:
     if min_version == max_version:
         return f"version {min_version}"
     return f"versions {min_version}..{max_version}"
+
+
+def _requested_devices_for_device(device: str) -> list[int] | None:
+    text = str(device).lower()
+    if text == "cuda":
+        return None
+    if text.startswith("cuda:"):
+        try:
+            return [int(text.split(":", 1)[1])]
+        except ValueError:
+            return None
+    return None
+
+
+def _set_cuda_device(torch, device: str) -> None:
+    if str(device).lower().startswith("cuda:"):
+        torch.cuda.set_device(device)
