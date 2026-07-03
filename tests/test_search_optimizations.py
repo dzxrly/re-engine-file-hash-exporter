@@ -13,7 +13,7 @@ from re_file_hash_exporter.core.pak_hash import PakHashGroup, pak_group_identity
 from re_file_hash_exporter.core.search.candidate_policy import candidate_count_for_entries
 from re_file_hash_exporter.core.search.cpu_matcher import match_entries
 from re_file_hash_exporter.core.search.gpu_batches import iter_prepared_gpu_batches
-from re_file_hash_exporter.core.search.gpu_pool import MultiGpuSearchOutcome, _init_gpu_worker
+from re_file_hash_exporter.core.search.gpu_pool import MultiGpuSearchOutcome, _gpu_process_context, _init_gpu_worker
 from re_file_hash_exporter.core.search.path_catalog import RawPathEntry, collect_raw_path_entries_by_extension
 
 
@@ -302,6 +302,9 @@ class SearchOptimizationTests(unittest.TestCase):
                 "stop_signal",
             ],
         )
+
+    def test_gpu_worker_pool_uses_spawn_context_for_cuda(self) -> None:
+        self.assertEqual(_gpu_process_context().get_start_method(), "spawn")
 
 
 if __name__ == "__main__":

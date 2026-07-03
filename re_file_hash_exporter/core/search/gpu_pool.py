@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
-from multiprocessing import Manager
 from typing import Callable, Iterable
 
 from ..gpu_torch import match_extension_with_torch
@@ -90,7 +90,8 @@ def search_extension_multi_gpu(
 
     outcome = MultiGpuSearchOutcome()
     reported_versions = {int(version) for version in found_versions}
-    manager = Manager()
+    process_context = _gpu_process_context()
+    manager = process_context.Manager()
     shared_found_versions = manager.dict({int(version): True for version in found_versions})
     stop_signal = manager.Event()
     workers = [
@@ -100,6 +101,7 @@ def search_extension_multi_gpu(
             index=index,
             executor=ProcessPoolExecutor(
                 max_workers=1,
+                mp_context=process_context,
                 initializer=_init_gpu_worker,
                 initargs=(
                     device_id,
@@ -192,6 +194,10 @@ def search_extension_multi_gpu(
             if not worker.failed:
                 worker.shutdown(cancel_futures=True)
         manager.shutdown()
+
+
+def _gpu_process_context() -> mp.context.BaseContext:
+    return mp.get_context("spawn")
 
 
 def _init_gpu_worker(
