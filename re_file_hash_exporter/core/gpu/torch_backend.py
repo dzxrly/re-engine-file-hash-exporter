@@ -5,14 +5,15 @@ import queue
 import threading
 from typing import Callable
 
-from .search.gpu_batches import (
+from ..search.gpu_batches import (
     PreparedGpuBase,
     PreparedGpuBatch,
+    PreparedGpuSuffixBatch,
     candidate_count_for_prepared_bases,
-    iter_prepared_gpu_batches,
+    iter_prepared_gpu_suffix_batches,
     prepare_gpu_bases,
 )
-from .search.path_catalog import RawPathEntry
+from ..search.path_catalog import RawPathEntry
 
 ProgressCallback = Callable[[object], None]
 CancelCallback = Callable[[], bool]
@@ -21,6 +22,7 @@ VersionFoundCallback = Callable[[int], bool]
 MarkVersionFoundCallback = Callable[[int], None]
 
 MASK32 = 0xFFFF_FFFF
+SIGN_BIT_I64 = -0x8000_0000_0000_0000
 MURMUR3_C1 = 0x85EB_CA6B
 MURMUR3_C2 = 0xC2B2_AE35
 MURMUR3_R1 = 16
@@ -268,6 +270,224 @@ def hash_prepared_mixed_batch(
             _release_device_cache(torch, device)
 
 
+def hash_incremental_prepared_mixed_batch(
+    prepared_paths: PreparedGpuSuffixBatch,
+    bases: tuple[PreparedGpuBase, ...],
+    device: str = "cuda",
+    release_cache: bool = True,
+    base_tensors: dict[str, object] | None = None,
+) -> list[int]:
+    import torch
+
+    if not prepared_paths:
+        return []
+
+    _set_cuda_device(torch, device)
+    upper = None
+    lower = None
+
+    try:
+        inference_context = getattr(torch, "inference_mode", torch.no_grad)
+        with inference_context():
+            upper, lower = _hash_incremental_batch_tensors(
+                torch=torch,
+                prepared_paths=prepared_paths,
+                bases=bases,
+                device=device,
+                base_tensors=base_tensors,
+            )
+
+            upper_values = upper.detach().cpu().tolist()
+            lower_values = lower.detach().cpu().tolist()
+            return [
+                ((upper_value & MASK32) << 32) | (lower_value & MASK32)
+                for upper_value, lower_value in zip(upper_values, lower_values)
+            ]
+    finally:
+        del upper, lower
+        if release_cache:
+            _release_device_cache(torch, device)
+
+
+def match_incremental_prepared_mixed_batch(
+    prepared_paths: PreparedGpuSuffixBatch,
+    bases: tuple[PreparedGpuBase, ...],
+    pak_hash_keys,
+    device: str = "cuda",
+    release_cache: bool = True,
+    base_tensors: dict[str, object] | None = None,
+) -> list[int]:
+    import torch
+
+    if not prepared_paths or pak_hash_keys.numel() == 0:
+        return []
+
+    _set_cuda_device(torch, device)
+    upper = None
+    lower = None
+    keys = None
+    positions = None
+    matched = None
+
+    try:
+        inference_context = getattr(torch, "inference_mode", torch.no_grad)
+        with inference_context():
+            upper, lower = _hash_incremental_batch_tensors(
+                torch=torch,
+                prepared_paths=prepared_paths,
+                bases=bases,
+                device=device,
+                base_tensors=base_tensors,
+            )
+            keys = _mixed_hash_sort_keys(torch, upper, lower)
+            positions = torch.searchsorted(pak_hash_keys, keys)
+            in_bounds = positions < pak_hash_keys.numel()
+            safe_positions = torch.clamp(positions, max=pak_hash_keys.numel() - 1)
+            matched = in_bounds & (pak_hash_keys.gather(0, safe_positions) == keys)
+            return torch.nonzero(matched, as_tuple=False).view(-1).detach().cpu().tolist()
+    finally:
+        del upper, lower, keys, positions, matched
+        if release_cache:
+            _release_device_cache(torch, device)
+
+
+def prepare_pak_hash_key_tensor(torch, pak_hashes: set[int], device: str):
+    keys = [_u64_sort_key(value) for value in pak_hashes]
+    keys.sort()
+    return torch.tensor(keys, dtype=torch.int64, device=device)
+
+
+def _hash_incremental_batch_tensors(
+    torch,
+    prepared_paths: PreparedGpuSuffixBatch,
+    bases: tuple[PreparedGpuBase, ...],
+    device: str,
+    base_tensors: dict[str, object] | None,
+):
+    tensors = base_tensors
+    if tensors is None:
+        tensors = _prepare_incremental_base_tensors(torch, bases, device)
+
+    lengths = [int(length) for length in prepared_paths.lengths]
+    max_len = max(lengths)
+    upper_units = torch.zeros((len(prepared_paths), max_len), dtype=torch.int32)
+    lower_units = torch.zeros((len(prepared_paths), max_len), dtype=torch.int32)
+    for row, length in enumerate(lengths):
+        if not length:
+            continue
+        offset = int(prepared_paths.offsets[row])
+        upper_row = prepared_paths.upper_units[offset : offset + length]
+        lower_row = prepared_paths.lower_units[offset : offset + length]
+        upper_units[row, :length] = torch.tensor(upper_row, dtype=torch.int32)
+        lower_units[row, :length] = torch.tensor(lower_row, dtype=torch.int32)
+
+    upper_units = upper_units.to(device, non_blocking=True)
+    lower_units = lower_units.to(device, non_blocking=True)
+    length_tensor = torch.tensor(lengths, dtype=torch.int32, device=device)
+    base_indexes = torch.tensor(
+        [int(index) for index in prepared_paths.base_indexes],
+        dtype=torch.int64,
+        device=device,
+    )
+    upper = _hash_incremental_preconverted_units(
+        torch,
+        upper_units,
+        length_tensor,
+        base_indexes,
+        tensors["upper_states"],
+        tensors["upper_tail_units"],
+        tensors["base_lengths"],
+    )
+    lower = _hash_incremental_preconverted_units(
+        torch,
+        lower_units,
+        length_tensor,
+        base_indexes,
+        tensors["lower_states"],
+        tensors["lower_tail_units"],
+        tensors["base_lengths"],
+    )
+    return upper, lower
+
+
+def _mixed_hash_sort_keys(torch, upper, lower):
+    combined = torch.bitwise_or(upper << 32, lower)
+    return torch.bitwise_xor(combined, SIGN_BIT_I64)
+
+
+def _u64_sort_key(value: int) -> int:
+    value = int(value) & 0xFFFF_FFFF_FFFF_FFFF
+    signed = value if value < (1 << 63) else value - (1 << 64)
+    return signed ^ SIGN_BIT_I64
+
+
+def _prepare_incremental_base_tensors(torch, bases: tuple[PreparedGpuBase, ...], device: str) -> dict[str, object]:
+    return {
+        "upper_states": torch.tensor(
+            [base.base_upper_state for base in bases],
+            dtype=torch.int64,
+            device=device,
+        ),
+        "lower_states": torch.tensor(
+            [base.base_lower_state for base in bases],
+            dtype=torch.int64,
+            device=device,
+        ),
+        "upper_tail_units": torch.tensor(
+            [base.base_upper_tail_unit for base in bases],
+            dtype=torch.int64,
+            device=device,
+        ),
+        "lower_tail_units": torch.tensor(
+            [base.base_lower_tail_unit for base in bases],
+            dtype=torch.int64,
+            device=device,
+        ),
+        "base_lengths": torch.tensor(
+            [base.base_unit_count for base in bases],
+            dtype=torch.int64,
+            device=device,
+        ),
+    }
+
+
+def _hash_incremental_preconverted_units(
+    torch,
+    suffix_units,
+    suffix_lengths,
+    base_indexes,
+    base_states,
+    base_tail_units,
+    base_lengths,
+):
+    state = base_states.gather(0, base_indexes).clone()
+    processed_units = base_lengths.gather(0, base_indexes).clone()
+    tail_unit = base_tail_units.gather(0, base_indexes).clone()
+    tail_active = (processed_units & 1) == 1
+
+    for unit_index in range(suffix_units.shape[1]):
+        active = suffix_lengths > unit_index
+        unit = suffix_units[:, unit_index].to(torch.int64)
+        make_block = active & tail_active
+        block = torch.bitwise_or(tail_unit, unit << 16)
+        next_state = torch.bitwise_xor(state, _murmur3_calc_k(torch, block))
+        next_state = _rotl32(torch, next_state, MURMUR3_R2)
+        next_state = _u32(torch, next_state * MURMUR3_M + MURMUR3_N)
+        state = torch.where(make_block, next_state, state)
+
+        store_tail = active & ~tail_active
+        tail_unit = torch.where(make_block, torch.zeros_like(tail_unit), tail_unit)
+        tail_unit = torch.where(store_tail, unit, tail_unit)
+        tail_active = torch.where(active, torch.logical_not(tail_active), tail_active)
+        processed_units = processed_units + active.to(torch.int64)
+
+    if bool(tail_active.any()):
+        tail_state = torch.bitwise_xor(state, _murmur3_calc_k(torch, tail_unit))
+        state = torch.where(tail_active, tail_state, state)
+
+    return _murmur3_finish(torch, state, processed_units * 2)
+
+
 def match_extension_with_torch(
     extension: str,
     entries: list[RawPathEntry],
@@ -310,6 +530,9 @@ def match_extension_with_torch(
     if not active_versions:
         return [], bool(cancel_requested and cancel_requested())
 
+    import torch
+
+    _set_cuda_device(torch, device)
     bases = prepared_bases
     if bases is None:
         bases = prepare_gpu_bases(
@@ -320,6 +543,8 @@ def match_extension_with_torch(
             include_streaming,
             profiles,
         )
+    base_tensors = _prepare_incremental_base_tensors(torch, bases, device)
+    pak_hash_keys = prepare_pak_hash_key_tensor(torch, pak_hashes, device)
     total_candidates = candidate_count_for_prepared_bases(bases, len(active_versions))
     total_batches = max(1, math.ceil(total_candidates / batch_size))
     if progress:
@@ -349,23 +574,29 @@ def match_extension_with_torch(
                 return matches, True
 
             version_text = _format_version_progress(batch.min_version, batch.max_version)
-            hashes = hash_prepared_mixed_batch(batch, device=device, release_cache=False)
+            match_indexes = match_incremental_prepared_mixed_batch(
+                batch,
+                bases,
+                pak_hash_keys,
+                device=device,
+                release_cache=False,
+                base_tensors=base_tensors,
+            )
             if cancel_requested and cancel_requested():
                 return matches, True
             if scan_progress:
                 scan_progress(len(batch))
             batch_matches = []
-            for index, hash_value in enumerate(hashes):
+            for index in match_indexes:
                 version = int(batch.versions[index])
                 if version_found(version):
                     continue
-                if hash_value in pak_hashes:
-                    full_path = batch.full_path_at(index, bases)
-                    if full_path in seen:
-                        continue
-                    seen.add(full_path)
-                    mark_discovered(version)
-                    batch_matches.append((batch.raw_path_at(index, bases), version, full_path))
+                full_path = batch.full_path_at(index, bases)
+                if full_path in seen:
+                    continue
+                seen.add(full_path)
+                mark_discovered(version)
+                batch_matches.append((batch.raw_path_at(index, bases), version, full_path))
             matches.extend(batch_matches)
 
             if progress:
@@ -404,7 +635,7 @@ def _iter_gpu_batches_with_prefetch(
     producer_count = max(1, int(producer_count or 1))
     prefetch_batches = max(0, int(prefetch_batches or 0))
     if producer_count <= 1 and prefetch_batches <= 0:
-        yield from iter_prepared_gpu_batches(
+        yield from iter_prepared_gpu_suffix_batches(
             bases,
             active_versions,
             batch_size,
@@ -414,7 +645,7 @@ def _iter_gpu_batches_with_prefetch(
         )
         return
 
-    batch_queue: queue.Queue[PreparedGpuBatch | BaseException | None] = queue.Queue(
+    batch_queue: queue.Queue[PreparedGpuSuffixBatch | BaseException | None] = queue.Queue(
         maxsize=max(1, prefetch_batches)
     )
     version_slices = _split_versions_for_producers(active_versions, producer_count)
@@ -422,7 +653,7 @@ def _iter_gpu_batches_with_prefetch(
 
     def produce(version_slice: list[int]) -> None:
         try:
-            for batch in iter_prepared_gpu_batches(
+            for batch in iter_prepared_gpu_suffix_batches(
                 bases,
                 version_slice,
                 batch_size,
@@ -477,8 +708,8 @@ def _split_versions_for_producers(versions: list[int], producer_count: int) -> l
 
 
 def _put_prefetch_item(
-    batch_queue: "queue.Queue[PreparedGpuBatch | BaseException | None]",
-    item: PreparedGpuBatch | BaseException | None,
+    batch_queue: "queue.Queue[PreparedGpuSuffixBatch | BaseException | None]",
+    item: PreparedGpuSuffixBatch | BaseException | None,
     cancel_requested: CancelCallback | None,
 ) -> None:
     while True:

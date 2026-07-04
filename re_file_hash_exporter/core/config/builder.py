@@ -3,14 +3,14 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
-from .constants import (
+from ..constants import (
     DEFAULT_PLATFORM_SUFFIXES,
     DEFAULT_PREFIXES,
     IGNORED_RESOURCE_EXTENSIONS,
     LANGUAGES,
     MISSING_REPORT_SUFFIX,
 )
-from .models import DmpScanResult, SuffixCounts
+from ..models import DmpScanResult, SuffixCounts
 
 
 def merge_suffix_counts(*maps: SuffixCounts) -> SuffixCounts:
@@ -99,7 +99,7 @@ def build_missing_report(scan: DmpScanResult) -> str:
             "",
             "These paths were seen as raw `name.ext` strings without a numeric",
             "`.version` suffix in the DMP. They can be used by the optional",
-            "brute-force step.",
+            "suffix discovery step.",
             "",
         ]
     )

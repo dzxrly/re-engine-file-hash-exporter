@@ -10,13 +10,13 @@ from dataclasses import dataclass, field
 from multiprocessing import shared_memory
 from typing import Callable, Iterable
 
-from ..gpu_torch import match_extension_with_torch
-from ..models import BruteForceMatch
-from ..version_plan import VersionPlan
+from ..gpu.torch_backend import match_extension_with_torch
+from ..models import SuffixDiscoveryMatch
+from ..versions.plan import VersionPlan
 from .candidate_policy import candidate_count_for_entries
 from .gpu_batches import PreparedGpuBase, prepare_gpu_bases
 from .path_catalog import RawPathEntry
-from .progress import BruteForceProgressTracker, ProgressCallback
+from .progress import SuffixDiscoveryProgressTracker, ProgressCallback
 
 CancelCallback = Callable[[], bool]
 
@@ -39,7 +39,7 @@ _WORKER_STOP_SIGNAL = None
 
 @dataclass(slots=True)
 class MultiGpuSearchOutcome:
-    matches: list[BruteForceMatch] = field(default_factory=list)
+    matches: list[SuffixDiscoveryMatch] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     cancelled: bool = False
     completed: bool = True
@@ -106,6 +106,11 @@ class _SharedHashView:
         index = bisect_left(self._values, target, 0, self._count)
         return index < self._count and int(self._values[index]) == target
 
+    def __iter__(self):
+        if self._values is None:
+            return iter(())
+        return (int(self._values[index]) for index in range(self._count))
+
     def close(self) -> None:
         if self._values is not None:
             self._values.release()
@@ -127,7 +132,7 @@ def search_extension_multi_gpu(
     include_streaming: bool,
     profiles: dict[str, dict],
     version_chunk_size: int,
-    tracker: BruteForceProgressTracker,
+    tracker: SuffixDiscoveryProgressTracker,
     progress: ProgressCallback | None,
     stopped: CancelCallback,
     found_versions: set[int],
@@ -474,7 +479,7 @@ def _emit_task_logs(task_result: _GpuTaskResult, progress: ProgressCallback | No
 
 
 def _record_task_matches(
-    out: list[BruteForceMatch],
+    out: list[SuffixDiscoveryMatch],
     extension: str,
     task_result: _GpuTaskResult,
     reported_versions: set[int],
@@ -489,7 +494,7 @@ def _record_task_matches(
         found_versions.add(version)
         shared_found_versions[version] = True
         out.append(
-            BruteForceMatch(
+            SuffixDiscoveryMatch(
                 extension=extension,
                 version=version,
                 raw_path=raw_path,

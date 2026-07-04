@@ -3,41 +3,24 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
-from .candidates import normalize_language_mode
-from .gpu_torch import match_extension_with_torch, resolve_cuda_devices
-from .models import BruteForceMatch, BruteForceOptions, BruteForceResult, DmpScanResult, SuffixCounts
-from .pak.cache import PakHashCache
-from .pak_hash import PakHashGroup, load_hash_groups_from_paks
-from .search.candidate_policy import candidate_count_for_entries
-from .search.path_catalog import RawPathEntry, collect_raw_path_entries_by_extension
-from .search.planning import GroupPlan, parse_custom_versions, plan_group, plan_versions_for_extension
-from .search.gpu_pool import search_extension_multi_gpu
-from .search.process_pool import CpuSearchExecutor
-from .search.progress import BruteForceProgressTracker, ProgressCallback
-from .version_plan import VersionPlan
-from .version_profiles import describe_auto_profile, load_version_profiles
+from ..gpu.torch_backend import match_extension_with_torch, resolve_cuda_devices
+from ..models import SuffixDiscoveryMatch, SuffixDiscoveryOptions, SuffixDiscoveryResult, DmpScanResult, SuffixCounts
+from ..pak.cache import PakHashCache
+from ..pak.reader import PakHashGroup, load_hash_groups_from_paks
+from ..search.candidate_policy import candidate_count_for_entries, normalize_language_mode
+from ..search.gpu_pool import search_extension_multi_gpu
+from ..search.path_catalog import RawPathEntry, collect_raw_path_entries_by_extension
+from ..search.planning import GroupPlan, parse_custom_versions, plan_group, plan_versions_for_extension
+from ..search.process_pool import CpuSearchExecutor
+from ..search.progress import SuffixDiscoveryProgressTracker, ProgressCallback
+from ..versions.plan import VersionPlan
+from ..versions.profiles import describe_auto_profile, load_version_profiles
 
 CancelCallback = Callable[[], bool]
 
 VERSION_CHUNK_SIZE = 4096
-
-
-def collect_raw_paths_by_extension(
-    scan: DmpScanResult,
-    selected: Iterable[str],
-    include_versioned_extensions: bool = False,
-) -> dict[str, list[str]]:
-    entries_by_extension = collect_raw_path_entries_by_extension(
-        scan,
-        selected,
-        include_versioned_extensions=include_versioned_extensions,
-    )
-    return {
-        extension: [entry.raw_path for entry in entries]
-        for extension, entries in entries_by_extension.items()
-    }
 
 
 def gpu_status_message(requested: bool, requested_devices: list[int] | None = None) -> tuple[bool, str | None, list[int]]:
@@ -49,15 +32,15 @@ def gpu_status_message(requested: bool, requested_devices: list[int] | None = No
     return False, f"GPU requested but unavailable: {message} Falling back to CPU multiprocessing.", []
 
 
-def brute_force_suffixes(
+def discover_suffixes(
     scan: DmpScanResult,
     pak_paths: list[Path],
     known_suffixes: SuffixCounts,
-    options: BruteForceOptions,
+    options: SuffixDiscoveryOptions,
     progress: ProgressCallback | None = None,
     cancel_requested: CancelCallback | None = None,
     pak_cache: PakHashCache | None = None,
-) -> BruteForceResult:
+) -> SuffixDiscoveryResult:
     def stopped() -> bool:
         return bool(cancel_requested and cancel_requested())
 
@@ -74,15 +57,15 @@ def brute_force_suffixes(
     entries_by_extension = collect_raw_path_entries_by_extension(
         scan,
         options.selected_extensions,
-        include_versioned_extensions=options.include_versioned_extensions,
+        include_versioned_extensions=True,
     )
     if not entries_by_extension:
-        return BruteForceResult(warnings=["No raw paths found for selected extensions."])
+        return SuffixDiscoveryResult(warnings=["No raw path evidence found for selected extensions."])
 
     if stopped():
-        return BruteForceResult(cancelled=True)
+        return SuffixDiscoveryResult(cancelled=True)
 
-    tracker = BruteForceProgressTracker(
+    tracker = SuffixDiscoveryProgressTracker(
         progress,
         total_extensions=len(entries_by_extension),
         total_scan_count=0,
@@ -96,34 +79,35 @@ def brute_force_suffixes(
     pak_groups = _load_pak_groups(pak_paths, pak_cache, progress)
     if stopped():
         if progress:
-            progress("Stop requested. Brute-force search cancelled before matching.")
+            progress("Stop requested. Suffix discovery cancelled before matching.")
         tracker.set_phase("loading_paks", "Cancelled while loading PAK metadata")
-        return BruteForceResult(cancelled=True)
+        return SuffixDiscoveryResult(cancelled=True)
 
     if progress:
         total_hash_entries = sum(len(group.hashes) for group in pak_groups)
         progress(f"Loaded {total_hash_entries} PAK hash entries across {len(pak_groups)} PAK group(s).")
 
-    result = BruteForceResult(warnings=warnings)
+    result = SuffixDiscoveryResult(warnings=warnings)
     profiles = load_version_profiles()
     auto_profiles = profiles if options.mode == "auto_detect" else {}
     language_mode = normalize_language_mode(options.language_mode, options.include_languages)
     processes = options.processes if options.processes and options.processes > 0 else os.cpu_count() or 1
     processes = max(1, processes)
     max_versions_by_group: dict[str, dict[str, int]] = {}
-    discovered_versions_by_extension = _initial_discovered_versions(known_suffixes)
+    discovered_versions_by_group: dict[str, dict[str, set[int]]] = {}
     baseline_groups: set[str] = set()
 
     for group_index, group in enumerate(pak_groups, start=1):
         if stopped():
             result.cancelled = True
             if progress:
-                progress("Stop requested. Brute-force search cancelled.")
+                progress("Stop requested. Suffix discovery cancelled.")
             tracker.emit(force=True)
             return result
 
         group_mode, incremental_group = _group_scan_mode(group, baseline_groups)
         _report_group_start(group, group_index, len(pak_groups), group_mode, progress)
+        group_discovered_versions = discovered_versions_by_group.setdefault(group.group_key, {})
 
         group_plan = plan_group(
             group=group,
@@ -131,7 +115,7 @@ def brute_force_suffixes(
             incremental_group=incremental_group,
             entries_by_extension=entries_by_extension,
             known_suffixes=known_suffixes,
-            skip_versions_by_extension=discovered_versions_by_extension,
+            skip_versions_by_extension=group_discovered_versions,
             max_versions_by_extension=max_versions_by_group.get(group.group_key, {}) if incremental_group else {},
             options=options,
             profiles=profiles,
@@ -166,13 +150,13 @@ def brute_force_suffixes(
                 if stopped():
                     result.cancelled = True
                     if progress:
-                        progress("Stop requested. Brute-force search cancelled.")
+                        progress("Stop requested. Suffix discovery cancelled.")
                     tracker.emit(force=True)
                     return result
 
                 plan = group_plan.versions_by_extension[extension]
                 if not plan.count:
-                    if discovered_versions_by_extension.get(extension):
+                    if group_discovered_versions.get(extension):
                         if progress:
                             progress(f".{extension}: no new candidate versions to search for {group.display_name}.")
                     else:
@@ -181,7 +165,7 @@ def brute_force_suffixes(
                     continue
 
                 before_match_count = len(result.matches)
-                found_versions = discovered_versions_by_extension.setdefault(extension, set())
+                found_versions = group_discovered_versions.setdefault(extension, set())
                 if use_gpu:
                     gpu_outcome = _search_extension_gpu(
                         extension=extension,
@@ -245,7 +229,7 @@ def brute_force_suffixes(
 
 @dataclass(slots=True)
 class _GpuOutcome:
-    matches: list[BruteForceMatch]
+    matches: list[SuffixDiscoveryMatch]
     gpu_available: bool
     completed: bool
     cancelled: bool = False
@@ -295,7 +279,7 @@ def _report_search_start(
     group: PakHashGroup,
     group_mode: str,
     group_plan: GroupPlan,
-    tracker: BruteForceProgressTracker,
+    tracker: SuffixDiscoveryProgressTracker,
     entries_by_extension: dict[str, list[RawPathEntry]],
     progress: ProgressCallback | None,
 ) -> None:
@@ -311,7 +295,7 @@ def _report_search_start(
             f"{group_plan.versions_by_extension[extension].count} version(s), {scan_count} path candidate scan(s)."
         )
     progress(
-        f"Brute-force search started for {group.display_name} ({group_mode}): "
+        f"Suffix discovery started for {group.display_name} ({group_mode}): "
         + ", ".join(f".{extension}" for extension in sorted(entries_by_extension))
     )
 
@@ -322,10 +306,10 @@ def _search_extension_gpu(
     plan: VersionPlan,
     known_profile_text: str,
     group_hashes: set[int],
-    options: BruteForceOptions,
+    options: SuffixDiscoveryOptions,
     profiles: dict[str, dict],
     language_mode: str,
-    tracker: BruteForceProgressTracker,
+    tracker: SuffixDiscoveryProgressTracker,
     progress: ProgressCallback | None,
     cancel_requested: CancelCallback | None,
     stopped: CancelCallback,
@@ -342,7 +326,7 @@ def _search_extension_gpu(
         if progress:
             device_text = ", ".join(f"cuda:{device}" for device in devices)
             progress(
-                f"Brute matching .{extension}: {len(entries)} raw paths x {plan.count} versions "
+                f"Suffix discovery .{extension}: {len(entries)} raw paths x {plan.count} versions "
                 f"using multi-GPU torch CUDA on {device_text} "
                 f"(1 CUDA owner/device, {producers_per_device} producer(s)/device, "
                 f"prefetch {prefetch_batches_per_device})."
@@ -370,7 +354,7 @@ def _search_extension_gpu(
             )
         except InterruptedError:
             if progress:
-                progress("Stop requested. Brute-force search cancelled.")
+                progress("Stop requested. Suffix discovery cancelled.")
             tracker.emit(force=True)
             return _GpuOutcome([], gpu_available=True, completed=True, cancelled=True)
         warning = "; ".join(outcome.warnings) if outcome.warnings else None
@@ -384,13 +368,13 @@ def _search_extension_gpu(
 
     if progress:
         progress(
-            f"Brute matching .{extension}: {len(entries)} raw paths x {plan.count} versions "
+            f"Suffix discovery .{extension}: {len(entries)} raw paths x {plan.count} versions "
             f"using torch CUDA on cuda:{devices[0]} "
             f"({producers_per_device} producer(s), prefetch {prefetch_batches_per_device})."
         )
         progress(f".{extension}: version candidates {_format_candidate_range(plan)} ({plan.count} total).")
 
-    matches: list[BruteForceMatch] = []
+    matches: list[SuffixDiscoveryMatch] = []
     try:
         chunk_size = _gpu_version_chunk_size(
             entries,
@@ -427,7 +411,7 @@ def _search_extension_gpu(
             )
             for raw_path, version, full_path in gpu_matches:
                 matches.append(
-                    BruteForceMatch(
+                    SuffixDiscoveryMatch(
                         extension=extension,
                         version=version,
                         raw_path=raw_path,
@@ -436,7 +420,7 @@ def _search_extension_gpu(
                 )
             if cancelled:
                 if progress:
-                    progress("Brute-force search stopped by user.")
+                    progress("Suffix discovery stopped by user.")
                 tracker.emit(force=True)
                 return _GpuOutcome(matches, gpu_available=True, completed=True, cancelled=True)
     except RuntimeError as err:
@@ -446,7 +430,7 @@ def _search_extension_gpu(
         return _GpuOutcome(matches, gpu_available=False, completed=False, warning=warning)
     except InterruptedError:
         if progress:
-            progress("Stop requested. Brute-force search cancelled.")
+            progress("Stop requested. Suffix discovery cancelled.")
         tracker.emit(force=True)
         return _GpuOutcome(matches, gpu_available=True, completed=True, cancelled=True)
 
@@ -455,17 +439,17 @@ def _search_extension_gpu(
 
 
 def _search_extension_cpu(
-    result: BruteForceResult,
+    result: SuffixDiscoveryResult,
     cpu_executor: CpuSearchExecutor,
     extension: str,
     entries: list[RawPathEntry],
     plan: VersionPlan,
     total_candidates: int,
     known_profile_text: str,
-    options: BruteForceOptions,
+    options: SuffixDiscoveryOptions,
     language_mode: str,
     processes: int,
-    tracker: BruteForceProgressTracker,
+    tracker: SuffixDiscoveryProgressTracker,
     progress: ProgressCallback | None,
     found_versions: set[int],
 ) -> None:
@@ -473,7 +457,7 @@ def _search_extension_cpu(
         progress(f".{extension}: auto_detect using {known_profile_text}.")
     if progress:
         progress(
-            f"Brute matching .{extension}: {len(entries)} raw paths x {plan.count} versions "
+            f"Suffix discovery .{extension}: {len(entries)} raw paths x {plan.count} versions "
             f"({total_candidates} path candidates) using {processes} processes."
         )
         progress(f".{extension}: version candidates {_format_candidate_range(plan)} ({plan.count} total).")
@@ -494,15 +478,7 @@ def _search_extension_cpu(
     result.cancelled = outcome.cancelled
 
 
-def _initial_discovered_versions(known_suffixes: SuffixCounts) -> dict[str, set[int]]:
-    return {
-        extension: {int(version) for version in versions}
-        for extension, versions in known_suffixes.items()
-        if versions
-    }
-
-
-def _gpu_batch_sizes_by_device(options: BruteForceOptions, devices: list[int]) -> dict[int, int]:
+def _gpu_batch_sizes_by_device(options: SuffixDiscoveryOptions, devices: list[int]) -> dict[int, int]:
     default = max(1, int(options.gpu_batch_size or 16384))
     out = {int(device): default for device in devices}
     for device, size in options.gpu_batch_sizes.items():
@@ -512,7 +488,7 @@ def _gpu_batch_sizes_by_device(options: BruteForceOptions, devices: list[int]) -
     return out
 
 
-def _gpu_producers_per_device(options: BruteForceOptions) -> int:
+def _gpu_producers_per_device(options: SuffixDiscoveryOptions) -> int:
     explicit = int(options.gpu_producers_per_device or 0)
     if explicit > 0:
         return explicit
@@ -550,7 +526,7 @@ def _gpu_version_chunk_size(
 def _update_group_max_versions(
     max_versions_by_group: dict[str, dict[str, int]],
     group_key: str,
-    matches: list[BruteForceMatch],
+    matches: list[SuffixDiscoveryMatch],
 ) -> None:
     if not matches:
         return
@@ -558,7 +534,7 @@ def _update_group_max_versions(
     _update_max_versions(group_versions, matches)
 
 
-def _update_max_versions(max_versions: dict[str, int], matches: list[BruteForceMatch]) -> None:
+def _update_max_versions(max_versions: dict[str, int], matches: list[SuffixDiscoveryMatch]) -> None:
     for match in matches:
         current = max_versions.get(match.extension)
         if current is None or match.version > current:

@@ -3,21 +3,19 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from .constants import IGNORED_RESOURCE_EXTENSIONS
-from .models import BruteForceOptions, SuffixCounts
-from .version_plan import VersionPlan, date_code_plan, discrete_version_plan, empty_version_plan, numeric_range_plan
+from ..constants import IGNORED_RESOURCE_EXTENSIONS
+from ..models import SuffixDiscoveryOptions, SuffixCounts
+from .plan import VersionPlan, date_code_plan, discrete_version_plan, empty_version_plan, numeric_range_plan
 
 PROFILE_FILE_NAME = "file_suffix_profiles.json"
 MIN_DATE_CODE_DATE = date(2000, 1, 1)
 DATE_END_TODAY = "today"
-CancelCallback = Callable[[], bool]
-_CANCEL_CHECK_INTERVAL = 8192
 
 
 def profile_file_candidates() -> list[Path]:
-    project_root = Path(__file__).resolve().parents[2]
+    project_root = Path(__file__).resolve().parents[3]
     cwd_path = Path.cwd() / PROFILE_FILE_NAME
     project_path = project_root / PROFILE_FILE_NAME
     if cwd_path == project_path:
@@ -59,38 +57,10 @@ def any_extension_uses_date_profile(extensions: list[str]) -> bool:
     return any(extension_uses_date_profile(extension, profiles) for extension in extensions)
 
 
-def plan_auto_detect_versions(
-    extension: str,
-    known_suffixes: SuffixCounts,
-    options: BruteForceOptions,
-    profiles: dict[str, dict[str, Any]],
-    cancel_requested: CancelCallback | None = None,
-) -> list[int]:
-    _raise_if_cancelled(cancel_requested)
-    normalized = _normalize_extension(extension)
-    profile = profiles.get(normalized)
-    suffix_type = _profile_suffix_type(profile)
-
-    if suffix_type == "exact":
-        return _range_versions(options, _priority_versions(profile), cancel_requested)
-
-    if suffix_type == "date_code":
-        if profile is None:
-            return []
-        return _date_code_versions(profile, options, cancel_requested)
-
-    if suffix_type == "adaptive":
-        adaptive = _adaptive_versions(normalized, known_suffixes, options, cancel_requested)
-        if adaptive:
-            return adaptive
-
-    return _range_versions(options, _priority_versions(profile), cancel_requested)
-
-
 def build_auto_detect_version_plan(
     extension: str,
     known_suffixes: SuffixCounts,
-    options: BruteForceOptions,
+    options: SuffixDiscoveryOptions,
     profiles: dict[str, dict[str, Any]],
 ) -> VersionPlan:
     normalized = _normalize_extension(extension)
@@ -140,7 +110,7 @@ def _profile_suffix_type(profile: dict[str, Any] | None) -> str:
 
 
 def _range_version_plan(
-    options: BruteForceOptions,
+    options: SuffixDiscoveryOptions,
     priority_versions: list[int] | None = None,
     description: str = "numeric range",
 ) -> VersionPlan:
@@ -159,7 +129,7 @@ def _range_version_plan(
 def _adaptive_version_plan(
     extension: str,
     known_suffixes: SuffixCounts,
-    options: BruteForceOptions,
+    options: SuffixDiscoveryOptions,
 ) -> VersionPlan:
     values: set[int] = set()
     for known in known_suffixes.get(extension, {}):
@@ -169,7 +139,7 @@ def _adaptive_version_plan(
     return discrete_version_plan(sorted(values), "adaptive known-neighbor range")
 
 
-def _date_code_version_plan(profile: dict[str, Any], options: BruteForceOptions) -> VersionPlan:
+def _date_code_version_plan(profile: dict[str, Any], options: SuffixDiscoveryOptions) -> VersionPlan:
     if str(profile.get("date_format", "YYMMDD")).upper() != "YYMMDD":
         raise ValueError("Only YYMMDD date_code profiles are currently supported.")
 
@@ -185,94 +155,7 @@ def _date_code_version_plan(profile: dict[str, Any], options: BruteForceOptions)
     )
 
 
-def _range_versions(
-    options: BruteForceOptions,
-    priority_versions: list[int] | None = None,
-    cancel_requested: CancelCallback | None = None,
-) -> list[int]:
-    priority = _ordered_unique(priority_versions or [])
-    if priority:
-        lower_delta = max(0, int(options.min_version))
-        upper_delta = max(0, int(options.max_version))
-        start = max(0, min(priority) - lower_delta)
-        end = max(start, max(priority) + upper_delta)
-    else:
-        start = max(0, int(options.min_version))
-        end = max(start, int(options.max_version))
-
-    values: list[int] = []
-    seen: set[int] = set()
-    for version in priority:
-        _raise_if_cancelled(cancel_requested)
-        if start <= version <= end and version not in seen:
-            seen.add(version)
-            values.append(version)
-
-    for index, version in enumerate(range(start, end + 1), start=1):
-        if index % _CANCEL_CHECK_INTERVAL == 0:
-            _raise_if_cancelled(cancel_requested)
-        if version in seen:
-            continue
-        seen.add(version)
-        values.append(version)
-    _raise_if_cancelled(cancel_requested)
-    return values
-
-
-def _adaptive_versions(
-    extension: str,
-    known_suffixes: SuffixCounts,
-    options: BruteForceOptions,
-    cancel_requested: CancelCallback | None = None,
-) -> list[int]:
-    values: set[int] = set()
-    for known in known_suffixes.get(extension, {}):
-        _raise_if_cancelled(cancel_requested)
-        start = max(0, known - options.neighbor_radius)
-        end = known + options.neighbor_radius
-        for version in range(start, end + 1):
-            values.add(version)
-    return sorted(values)
-
-
-def _date_code_versions(
-    profile: dict[str, Any],
-    options: BruteForceOptions,
-    cancel_requested: CancelCallback | None = None,
-) -> list[int]:
-    if str(profile.get("date_format", "YYMMDD")).upper() != "YYMMDD":
-        raise ValueError("Only YYMMDD date_code profiles are currently supported.")
-
-    _raise_if_cancelled(cancel_requested)
-    base_dates, start_date, end_date = _date_code_bounds(profile, options)
-
-    tail_width = int(profile.get("tail_width", 3))
-    all_tails = list(range(0, 10**tail_width))
-    priority_tails = [tail for tail in _priority_tails(profile) if 0 <= tail < 10**tail_width]
-    remainder_tails = [tail for tail in all_tails if tail not in set(priority_tails)]
-    tail_phases = [priority_tails, remainder_tails] if priority_tails else [all_tails]
-    all_dates = _date_range(start_date, end_date, cancel_requested)
-    priority_dates = [current for current in base_dates if start_date <= current <= end_date]
-    remainder_dates = [current for current in all_dates if current not in set(priority_dates)]
-    date_phases = [priority_dates, remainder_dates] if priority_dates else [all_dates]
-
-    values: list[int] = []
-    count = 0
-    for dates in date_phases:
-        for tails in tail_phases:
-            for current in dates:
-                _raise_if_cancelled(cancel_requested)
-                date_prefix = current.strftime("%y%m%d")
-                for tail in tails:
-                    values.append(int(f"{date_prefix}{tail:0{tail_width}d}"))
-                    count += 1
-                    if count % _CANCEL_CHECK_INTERVAL == 0:
-                        _raise_if_cancelled(cancel_requested)
-    _raise_if_cancelled(cancel_requested)
-    return _ordered_unique(values)
-
-
-def _date_code_bounds(profile: dict[str, Any], options: BruteForceOptions) -> tuple[list[date], date, date]:
+def _date_code_bounds(profile: dict[str, Any], options: SuffixDiscoveryOptions) -> tuple[list[date], date, date]:
     base_dates = _priority_dates(profile)
     if not base_dates:
         start_date, end_date = _legacy_date_range(profile, options)
@@ -295,24 +178,7 @@ def _local_today() -> date:
     return date.today()
 
 
-def _date_range(
-    start_date: date,
-    end_date: date,
-    cancel_requested: CancelCallback | None = None,
-) -> list[date]:
-    dates: list[date] = []
-    current = start_date
-    count = 0
-    while current <= end_date:
-        dates.append(current)
-        current += timedelta(days=1)
-        count += 1
-        if count % 32 == 0:
-            _raise_if_cancelled(cancel_requested)
-    return dates
-
-
-def _legacy_date_range(profile: dict[str, Any], options: BruteForceOptions) -> tuple[date, date]:
+def _legacy_date_range(profile: dict[str, Any], options: SuffixDiscoveryOptions) -> tuple[date, date]:
     start_text = str(profile.get("default_date_start", "")).strip()
     end_text = str(profile.get("default_date_end", start_text)).strip()
     if start_text and end_text:
@@ -399,7 +265,3 @@ def _ordered_unique(values) -> list[int]:
         out.append(value)
     return out
 
-
-def _raise_if_cancelled(cancel_requested: CancelCallback | None) -> None:
-    if cancel_requested and cancel_requested():
-        raise InterruptedError("Brute-force planning was cancelled.")

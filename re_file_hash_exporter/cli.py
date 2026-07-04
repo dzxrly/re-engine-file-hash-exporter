@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence, TextIO
@@ -15,7 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
         tomllib = None  # type: ignore[assignment]
 
 from .core.constants import IGNORED_RESOURCE_EXTENSIONS, LANGUAGE_MODE_LOCALIZED, LANGUAGE_MODES
-from .core.models import BruteForceOptions, BruteForceProgress, DmpScanResult
+from .core.models import SuffixDiscoveryOptions, SuffixDiscoveryProgress, DmpScanResult
 from .core.workflow import ExportWorkflow
 
 CANDIDATE_MODES = ("small_range", "adaptive", "custom", "auto_detect")
@@ -111,7 +114,7 @@ class Step2ProgressRenderer:
             self.progress.stop()
 
     def __call__(self, message: object) -> None:
-        if isinstance(message, BruteForceProgress):
+        if isinstance(message, SuffixDiscoveryProgress):
             self.update(message)
             return
         self.log(str(message))
@@ -122,7 +125,7 @@ class Step2ProgressRenderer:
             return
         print(message, file=self.fallback_stream, flush=True)
 
-    def update(self, progress: BruteForceProgress) -> None:
+    def update(self, progress: SuffixDiscoveryProgress) -> None:
         if not self.using_rich or self.progress is None or self.task_id is None:
             print(_format_progress_line(progress), file=self.fallback_stream, flush=True)
             return
@@ -250,24 +253,51 @@ def run_configured_workflow(config: CliConfig) -> int:
         print("Step 2: skipped because no selectable extensions were found after Step 1.")
         return 0
 
-    options = build_bruteforce_options(config.step2, selected)
+    options = build_suffix_discovery_options(config.step2, selected)
     print(
-        "Step 2: brute-force matching "
+        "Step 2: suffix discovery matching "
         f"{len(selected)} extension(s) against {len(config.pak_paths)} PAK file(s)..."
     )
+    stop_event = threading.Event()
     with Step2ProgressRenderer() as step2_progress:
-        result = workflow.run_bruteforce(
-            config.pak_paths,
-            config.output_path,
-            options,
-            progress=step2_progress,
-        )
+        with _step2_interrupt_handler(stop_event, step2_progress):
+            result = workflow.run_suffix_discovery(
+                config.pak_paths,
+                config.output_path,
+                options,
+                progress=step2_progress,
+                cancel_requested=stop_event.is_set,
+            )
     if result.cancelled:
-        print(f"Step 2 stopped with {len(result.matches)} partial match(es).")
+        print(f"Step 2 stopped with {len(result.matches)} partial suffix evidence match(es).")
     else:
-        print(f"Step 2 finished with {len(result.matches)} matched path(s).")
+        print(f"Step 2 finished with {len(result.matches)} suffix evidence match(es).")
     print(f"Output config: {config.output_path}")
     return 0
+
+
+@contextmanager
+def _step2_interrupt_handler(stop_event: threading.Event, progress: Callable[[object], None]):
+    previous_handler = signal.getsignal(signal.SIGINT)
+    interrupt_count = 0
+
+    def handle_sigint(signum, frame) -> None:  # noqa: ANN001
+        nonlocal interrupt_count
+        interrupt_count += 1
+        if interrupt_count == 1:
+            stop_event.set()
+            progress(
+                "Ctrl+C received. Stopping Step 2 gracefully; partial matches will be merged into the output config."
+            )
+            return
+        signal.signal(signal.SIGINT, previous_handler)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, handle_sigint)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
 
 
 def select_extensions_from_scan(
@@ -277,10 +307,11 @@ def select_extensions_from_scan(
 ) -> list[str]:
     if configured is None or configured == SELECT_ALL_MISSING:
         extensions = set(scan.unversioned_paths)
-    elif configured == SELECT_ALL:
-        extensions = set(scan.unversioned_paths)
         if include_versioned_extensions:
             extensions.update(scan.versioned_paths)
+    elif configured == SELECT_ALL:
+        extensions = set(scan.unversioned_paths)
+        extensions.update(scan.versioned_paths)
     else:
         extensions = set(configured)
 
@@ -291,8 +322,8 @@ def select_extensions_from_scan(
     )
 
 
-def build_bruteforce_options(settings: CliStep2Settings, selected_extensions: list[str]) -> BruteForceOptions:
-    return BruteForceOptions(
+def build_suffix_discovery_options(settings: CliStep2Settings, selected_extensions: list[str]) -> SuffixDiscoveryOptions:
+    return SuffixDiscoveryOptions(
         selected_extensions=selected_extensions,
         min_version=settings.min_version,
         max_version=settings.max_version,
@@ -639,13 +670,13 @@ def _value_as_str(value: Any, key: str) -> str:
 
 
 def _print_progress(message: object) -> None:
-    if isinstance(message, BruteForceProgress):
+    if isinstance(message, SuffixDiscoveryProgress):
         print(_format_progress_line(message), flush=True)
         return
     print(str(message), flush=True)
 
 
-def _format_progress_line(progress: BruteForceProgress) -> str:
+def _format_progress_line(progress: SuffixDiscoveryProgress) -> str:
     detail = f" | {progress.phase_detail}" if progress.phase_detail else ""
     return (
         f"[{progress.phase}{detail}] {progress.percent:.1f}% "
@@ -654,7 +685,7 @@ def _format_progress_line(progress: BruteForceProgress) -> str:
     )
 
 
-def _format_progress_phase(progress: BruteForceProgress) -> str:
+def _format_progress_phase(progress: SuffixDiscoveryProgress) -> str:
     labels = {
         "loading_paks": "Loading PAKs",
         "planning": "Planning",

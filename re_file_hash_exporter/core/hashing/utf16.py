@@ -123,11 +123,45 @@ class PreparedMixedText:
     lower_units: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedMurmurState:
+    state: int
+    processed_units: int
+    tail_unit: int
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMixedState:
+    upper: PreparedMurmurState
+    lower: PreparedMurmurState
+
+
 def prepare_mixed_text(value: str) -> PreparedMixedText:
     return PreparedMixedText(
         text=value,
         upper_units=_case_utf16_units(value, uppercase=True),
         lower_units=_case_utf16_units(value, uppercase=False),
+    )
+
+
+def prepare_mixed_state(value: PreparedMixedText | str) -> PreparedMixedState:
+    prepared = value if isinstance(value, PreparedMixedText) else prepare_mixed_text(value)
+    return PreparedMixedState(
+        upper=_prepare_murmur_state(prepared.upper_units),
+        lower=_prepare_murmur_state(prepared.lower_units),
+    )
+
+
+def _prepare_murmur_state(units: Iterable[int]) -> PreparedMurmurState:
+    state = _Murmur3State()
+    state.write_units(units)
+    tail_unit = 0
+    if state.tail_len:
+        tail_unit = state.tail[0] | (state.tail[1] << 8)
+    return PreparedMurmurState(
+        state=state.state,
+        processed_units=state.processed // 2,
+        tail_unit=tail_unit,
     )
 
 

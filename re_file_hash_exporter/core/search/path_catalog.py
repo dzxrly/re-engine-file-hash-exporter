@@ -5,7 +5,7 @@ from typing import Iterable
 
 from ..constants import DEFAULT_PLATFORM_SUFFIXES, DEFAULT_PREFIXES, IGNORED_RESOURCE_EXTENSIONS
 from ..models import DmpScanResult
-from ..path_parser import normalize_path, raw_path_from_reference, strip_prefix_ignore_case
+from ..dmp.parser import normalize_path, raw_path_from_reference, strip_prefix_ignore_case
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,4 +100,3 @@ def _platform_suffixes_from_path(path: str) -> tuple[str, ...]:
         suffixes.append(suffix)
         parts.pop()
     return tuple(reversed(suffixes))
-

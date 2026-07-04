@@ -3,12 +3,12 @@ from __future__ import annotations
 import time
 from typing import Callable
 
-from ..models import BruteForceProgress
+from ..models import SuffixDiscoveryProgress
 
 ProgressCallback = Callable[[object], None]
 
 
-class BruteForceProgressTracker:
+class SuffixDiscoveryProgressTracker:
     def __init__(
         self,
         progress: ProgressCallback | None,
@@ -92,7 +92,7 @@ class BruteForceProgressTracker:
             return
         self.last_emit_at = now
         self.progress(
-            BruteForceProgress(
+            SuffixDiscoveryProgress(
                 completed_extensions=self.completed_extensions,
                 total_extensions=self.total_extensions,
                 completed_scan_count=self.completed_scan_count,

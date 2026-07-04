@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ..pak_hash import PakHashGroup, load_hash_groups_from_paks
+from .reader import PakHashGroup, load_hash_groups_from_paks
 
 ProgressCallback = Callable[[str], None]
 
@@ -45,4 +45,3 @@ def _cache_key(path: Path) -> PakCacheKey:
     resolved = path.resolve()
     stat = resolved.stat()
     return PakCacheKey(path=str(resolved), size=stat.st_size, mtime_ns=stat.st_mtime_ns)
-

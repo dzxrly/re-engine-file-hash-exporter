@@ -49,7 +49,7 @@ class DmpScanResult:
 
 
 @dataclass(slots=True)
-class BruteForceOptions:
+class SuffixDiscoveryOptions:
     selected_extensions: list[str]
     min_version: int = 0
     max_version: int = 4096
@@ -74,7 +74,7 @@ class BruteForceOptions:
 
 
 @dataclass(slots=True)
-class BruteForceMatch:
+class SuffixDiscoveryMatch:
     extension: str
     version: int
     raw_path: str
@@ -83,7 +83,7 @@ class BruteForceMatch:
 
 
 @dataclass(slots=True)
-class BruteForceProgress:
+class SuffixDiscoveryProgress:
     completed_extensions: int
     total_extensions: int
     completed_scan_count: int
@@ -123,8 +123,8 @@ class BruteForceProgress:
 
 
 @dataclass(slots=True)
-class BruteForceResult:
-    matches: list[BruteForceMatch] = field(default_factory=list)
+class SuffixDiscoveryResult:
+    matches: list[SuffixDiscoveryMatch] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     cancelled: bool = False
 

@@ -4,7 +4,7 @@ from array import array
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from ..hash_utf16 import PreparedMixedText, prepare_mixed_text
+from ..hashing.utf16 import PreparedMixedText, prepare_mixed_state, prepare_mixed_text
 from .candidate_policy import iter_candidate_bases
 from .path_catalog import RawPathEntry
 
@@ -25,6 +25,11 @@ class PreparedGpuBase:
     base_text: str
     base_upper_units: tuple[int, ...]
     base_lower_units: tuple[int, ...]
+    base_upper_state: int
+    base_lower_state: int
+    base_upper_tail_unit: int
+    base_lower_tail_unit: int
+    base_unit_count: int
     suffixes: tuple[PreparedGpuSuffix, ...]
 
     def full_path(self, version: int, suffix_index: int) -> str:
@@ -100,6 +105,75 @@ class PreparedGpuBatch:
         )
 
 
+@dataclass(slots=True)
+class PreparedGpuSuffixBatch:
+    upper_units: array
+    lower_units: array
+    offsets: array
+    lengths: array
+    base_indexes: array
+    suffix_indexes: array
+    versions: array
+
+    @classmethod
+    def empty(cls) -> "PreparedGpuSuffixBatch":
+        return cls(
+            upper_units=array("H"),
+            lower_units=array("H"),
+            offsets=array("I"),
+            lengths=array("H"),
+            base_indexes=array("I"),
+            suffix_indexes=array("H"),
+            versions=array("Q"),
+        )
+
+    def __len__(self) -> int:
+        return len(self.versions)
+
+    @property
+    def min_version(self) -> int | None:
+        if not self.versions:
+            return None
+        return min(int(version) for version in self.versions)
+
+    @property
+    def max_version(self) -> int | None:
+        if not self.versions:
+            return None
+        return max(int(version) for version in self.versions)
+
+    def append(
+        self,
+        base_index: int,
+        suffix_index: int,
+        version: int,
+        upper_units: tuple[int, ...],
+        lower_units: tuple[int, ...],
+    ) -> None:
+        length = len(upper_units)
+        if length != len(lower_units):
+            raise ValueError("Prepared GPU suffix upper/lower unit lengths differ.")
+        if length > 0xFFFF:
+            raise ValueError("Prepared GPU suffix is too long for the compact batch format.")
+
+        self.offsets.append(len(self.upper_units))
+        self.lengths.append(length)
+        self.base_indexes.append(int(base_index))
+        self.suffix_indexes.append(int(suffix_index))
+        self.versions.append(int(version))
+        self.upper_units.extend(upper_units)
+        self.lower_units.extend(lower_units)
+
+    def raw_path_at(self, index: int, bases: tuple[PreparedGpuBase, ...]) -> str:
+        return bases[int(self.base_indexes[index])].raw_path
+
+    def full_path_at(self, index: int, bases: tuple[PreparedGpuBase, ...]) -> str:
+        return bases[int(self.base_indexes[index])].full_path(
+            int(self.versions[index]),
+            int(self.suffix_indexes[index]),
+        )
+
+
 def iter_prepared_gpu_batches(
     bases: tuple[PreparedGpuBase, ...],
     versions: list[int],
@@ -138,6 +212,44 @@ def iter_prepared_gpu_batches(
         yield batch
 
 
+def iter_prepared_gpu_suffix_batches(
+    bases: tuple[PreparedGpuBase, ...],
+    versions: list[int],
+    batch_size: int,
+    cancel_requested: CancelCallback | None,
+    found_versions: set[int] | None = None,
+    is_version_found: VersionFoundCallback | None = None,
+):
+    batch = PreparedGpuSuffixBatch.empty()
+    discovered_versions = found_versions if found_versions is not None else set()
+
+    def version_found(version: int) -> bool:
+        return version in discovered_versions or bool(is_version_found and is_version_found(version))
+
+    suffix_cache = _PreparedSuffixCache()
+    for version in versions:
+        if version_found(version):
+            continue
+        if cancel_requested and cancel_requested():
+            break
+        version_text = str(version)
+        version_prepared = suffix_cache.prepare(version_text)
+        for base_index, base in enumerate(bases):
+            if version_found(version):
+                break
+            if cancel_requested and cancel_requested():
+                break
+            for suffix_index, upper_units, lower_units in _iter_gpu_suffix_candidates(base, version_prepared):
+                if version_found(version):
+                    break
+                batch.append(base_index, suffix_index, version, upper_units, lower_units)
+                if len(batch) >= batch_size:
+                    yield batch
+                    batch = PreparedGpuSuffixBatch.empty()
+    if batch:
+        yield batch
+
+
 def prepare_gpu_bases(
     entries: Iterable[RawPathEntry],
     extension: str,
@@ -169,11 +281,17 @@ def candidate_count_for_prepared_bases(bases: tuple[PreparedGpuBase, ...], versi
 
 def _prepare_gpu_base(base, suffix_cache: "_PreparedSuffixCache") -> PreparedGpuBase:
     prepared = prepare_mixed_text(base.base_text)
+    state = prepare_mixed_state(prepared)
     return PreparedGpuBase(
         raw_path=base.raw_path,
         base_text=base.base_text,
         base_upper_units=prepared.upper_units,
         base_lower_units=prepared.lower_units,
+        base_upper_state=state.upper.state,
+        base_lower_state=state.lower.state,
+        base_upper_tail_unit=state.upper.tail_unit,
+        base_lower_tail_unit=state.lower.tail_unit,
+        base_unit_count=state.upper.processed_units,
         suffixes=_prepare_suffixes(base.platform_suffixes, base.language_suffixes, suffix_cache),
     )
 
@@ -235,4 +353,16 @@ def _iter_gpu_candidates(
             suffix_index,
             base.base_upper_units + version_prepared.upper_units + suffix.upper_units,
             base.base_lower_units + version_prepared.lower_units + suffix.lower_units,
+        )
+
+
+def _iter_gpu_suffix_candidates(
+    base: PreparedGpuBase,
+    version_prepared: PreparedMixedText,
+):
+    for suffix_index, suffix in enumerate(base.suffixes):
+        yield (
+            suffix_index,
+            version_prepared.upper_units + suffix.upper_units,
+            version_prepared.lower_units + suffix.lower_units,
         )

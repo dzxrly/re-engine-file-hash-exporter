@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from ..hash_utf16 import MixedHashState, PreparedMixedText, prepare_mixed_text
+from ..hashing.utf16 import MixedHashState, PreparedMixedText, prepare_mixed_text
 from .candidate_policy import CandidateBase, iter_candidate_bases
 from .path_catalog import RawPathEntry
 

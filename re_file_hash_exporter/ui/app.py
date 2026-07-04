@@ -30,8 +30,8 @@ from tkinter import (
 from tkinter import ttk
 
 from ..core.constants import IGNORED_RESOURCE_EXTENSIONS, LANGUAGE_MODE_LOCALIZED, LANGUAGE_MODE_OFF, LANGUAGE_MODES
-from ..core.models import BruteForceOptions, BruteForceProgress, DmpScanResult
-from ..core.version_profiles import (
+from ..core.models import SuffixDiscoveryOptions, SuffixDiscoveryProgress, DmpScanResult
+from ..core.versions.profiles import (
     DATE_END_TODAY,
     any_extension_uses_date_profile,
     default_date_range,
@@ -148,7 +148,7 @@ class ExporterApp:
         return box
 
     def _build_step2(self, parent: Frame) -> LabelFrame:
-        box = LabelFrame(parent, text="Step 2: optional brute-force suffix matching", padx=8, pady=8)
+        box = LabelFrame(parent, text="Step 2: suffix discovery against PAK hashes", padx=8, pady=8)
 
         self.step2_panes = PanedWindow(
             box,
@@ -163,10 +163,10 @@ class ExporterApp:
         left = Frame(self.step2_panes)
         list_header = Frame(left)
         list_header.pack(fill="x")
-        Label(list_header, text="Selectable extensions").pack(side=LEFT, anchor="w")
+        Label(list_header, text="Selectable extensions with path evidence").pack(side=LEFT, anchor="w")
         self.show_versioned_check = Checkbutton(
             list_header,
-            text="Show versioned extensions",
+            text="Show versioned-only extensions",
             variable=self.show_versioned_extensions,
             command=self._refresh_extension_list,
         )
@@ -239,7 +239,7 @@ class ExporterApp:
             "GPU workers/device",
             self.gpu_workers_per_device,
         )
-        self.step2_button = Button(right, text="Run Brute Force", command=self._run_step2)
+        self.step2_button = Button(right, text="Discover Suffixes", command=self._run_step2)
         self.step2_button.pack(fill="x", pady=(10, 0))
         self.stop_button = Button(right, text="Stop", command=self._stop_search, state="disabled")
         self.stop_button.pack(fill="x", pady=(4, 0))
@@ -464,12 +464,12 @@ class ExporterApp:
                 self.step2_button.config(text="Matching...")
                 self.stop_button.config(state="normal", text="Stop")
                 self._reset_step2_progress()
-                self._log("Starting brute-force matching...")
+                self._log("Starting suffix discovery...")
             else:
                 self._set_inputs_enabled(True)
                 self.step1_button.config(state="normal")
                 self._set_step2_enabled(self.last_scan is not None)
-                self.step2_button.config(text="Run Brute Force")
+                self.step2_button.config(text="Discover Suffixes")
                 self.stop_button.config(state="disabled", text="Stop")
 
     def _stop_search(self) -> None:
@@ -517,10 +517,10 @@ class ExporterApp:
         versioned_paths = scan.versioned_paths.get(extension)
         known_versions = scan.suffix_counts.get(extension)
         if missing_paths:
-            details.append(f"missing {len(missing_paths)}")
+            details.append(f"unversioned {len(missing_paths)}")
         if self.show_versioned_extensions.get() and versioned_paths:
             version_count = len(known_versions) if known_versions else 0
-            details.append(f"versioned {len(versioned_paths)}, versions {version_count}")
+            details.append(f"versioned evidence {len(versioned_paths)}, known versions {version_count}")
         suffix = f" ({', '.join(details)})" if details else ""
         return f".{extension}{suffix}"
 
@@ -589,7 +589,7 @@ class ExporterApp:
                 messagebox.showerror("Invalid GPU options", "GPU workers/device must be a positive integer.")
                 return
 
-        options = BruteForceOptions(
+        options = SuffixDiscoveryOptions(
             selected_extensions=selected,
             min_version=int(self.min_version.get() or 0),
             max_version=int(self.max_version.get() or 4096),
@@ -608,18 +608,18 @@ class ExporterApp:
             gpu_devices=gpu_devices,
             gpu_batch_sizes=gpu_batch_sizes,
             gpu_workers_per_device=gpu_workers_per_device,
-            include_versioned_extensions=self.show_versioned_extensions.get(),
+            include_versioned_extensions=True,
         )
 
         def task() -> None:
-            result = self.workflow.run_bruteforce(
+            result = self.workflow.run_suffix_discovery(
                 self.pak_paths,
                 output,
                 options,
                 progress=self._thread_log,
                 cancel_requested=lambda: bool(self.cancel_event and self.cancel_event.is_set()),
             )
-            self.events.put(("brute", result))
+            self.events.put(("suffix_discovery", result))
 
         self._run_in_worker(task, "step2")
 
@@ -693,8 +693,8 @@ class ExporterApp:
         return True
 
     def _thread_log(self, message: object) -> None:
-        if isinstance(message, BruteForceProgress):
-            self.events.put(("brute_progress", message))
+        if isinstance(message, SuffixDiscoveryProgress):
+            self.events.put(("suffix_discovery_progress", message))
             return
         self.events.put(("log", message))
 
@@ -709,13 +709,13 @@ class ExporterApp:
                 self._log(str(payload))
             elif kind == "scan":
                 self._on_scan(payload)  # type: ignore[arg-type]
-            elif kind == "brute":
+            elif kind == "suffix_discovery":
                 if payload.cancelled:  # type: ignore[union-attr]
-                    self._log(f"Brute force stopped: {len(payload.matches)} partial matched paths.")
+                    self._log(f"Suffix discovery stopped: {len(payload.matches)} partial evidence matches.")
                 else:
-                    self._log(f"Brute force finished: {len(payload.matches)} matched paths.")  # type: ignore[union-attr]
-            elif kind == "brute_progress":
-                self._on_brute_progress(payload)  # type: ignore[arg-type]
+                    self._log(f"Suffix discovery finished: {len(payload.matches)} evidence matches.")  # type: ignore[union-attr]
+            elif kind == "suffix_discovery_progress":
+                self._on_suffix_discovery_progress(payload)  # type: ignore[arg-type]
             elif kind == "error":
                 self._log(str(payload))
                 if self.active_task == "step1":
@@ -756,7 +756,7 @@ class ExporterApp:
             )
         )
 
-    def _on_brute_progress(self, progress: BruteForceProgress) -> None:
+    def _on_suffix_discovery_progress(self, progress: SuffixDiscoveryProgress) -> None:
         percent = max(0.0, min(100.0, progress.percent))
         self.step2_progress.config(value=percent)
         phase = self._format_phase(progress.phase)

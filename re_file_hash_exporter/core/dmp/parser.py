@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .constants import DEFAULT_PREFIXES, IGNORED_RESOURCE_EXTENSIONS, RESOURCE_PATH_PREFIXES, TAG_SUFFIXES
+from ..constants import DEFAULT_PREFIXES, IGNORED_RESOURCE_EXTENSIONS, RESOURCE_PATH_PREFIXES, TAG_SUFFIXES
 
 _VALID_EXTENSION_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 

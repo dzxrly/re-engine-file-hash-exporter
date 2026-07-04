@@ -4,13 +4,13 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Callable
 
-from ..models import BruteForceOptions, SuffixCounts
-from ..pak_hash import PakHashGroup
-from ..version_plan import VersionPlan, discrete_version_plan, numeric_range_plan
-from ..version_profiles import build_auto_detect_version_plan, load_version_profiles
+from ..models import SuffixDiscoveryOptions, SuffixCounts
+from ..pak.reader import PakHashGroup
+from ..versions.plan import VersionPlan, discrete_version_plan, numeric_range_plan
+from ..versions.profiles import build_auto_detect_version_plan, load_version_profiles
 from .candidate_policy import candidate_count_for_entries
 from .path_catalog import RawPathEntry
-from .progress import BruteForceProgressTracker, ProgressCallback
+from .progress import SuffixDiscoveryProgressTracker, ProgressCallback
 
 CancelCallback = Callable[[], bool]
 
@@ -49,7 +49,7 @@ def parse_custom_versions(text: str, cancel_requested: CancelCallback | None = N
 def plan_versions_for_extension(
     extension: str,
     known_suffixes: SuffixCounts,
-    options: BruteForceOptions,
+    options: SuffixDiscoveryOptions,
     auto_profiles: dict | None = None,
     cancel_requested: CancelCallback | None = None,
 ) -> VersionPlan:
@@ -84,11 +84,11 @@ def plan_group(
     known_suffixes: SuffixCounts,
     skip_versions_by_extension: dict[str, set[int]],
     max_versions_by_extension: dict[str, int],
-    options: BruteForceOptions,
+    options: SuffixDiscoveryOptions,
     profiles: dict[str, dict],
     auto_profiles: dict[str, dict],
     language_mode: str,
-    tracker: BruteForceProgressTracker,
+    tracker: SuffixDiscoveryProgressTracker,
     progress: ProgressCallback | None,
     stopped: CancelCallback,
 ) -> GroupPlan:
@@ -111,7 +111,7 @@ def plan_group(
     for extension, entries in entries_by_extension.items():
         if stopped():
             if progress:
-                progress("Stop requested. Brute-force planning cancelled.")
+                progress("Stop requested. Suffix discovery planning cancelled.")
             tracker.set_phase(
                 "planning",
                 "Cancelled while planning candidates",
@@ -135,7 +135,7 @@ def plan_group(
             )
         except InterruptedError:
             if progress:
-                progress("Stop requested. Brute-force planning cancelled.")
+                progress("Stop requested. Suffix discovery planning cancelled.")
             tracker.set_phase(
                 "planning",
                 "Cancelled while planning candidates",
@@ -146,11 +146,12 @@ def plan_group(
             )
             return GroupPlan(versions_by_extension, candidate_counts_by_extension, cancelled=True)
 
-        minimum_version = max_versions_by_extension.get(extension) if incremental_group else None
+        previous_group_max = max_versions_by_extension.get(extension) if incremental_group else None
+        minimum_version = previous_group_max + 1 if previous_group_max is not None else None
         if minimum_version is not None:
             plan = plan.with_minimum(minimum_version)
             if progress:
-                progress(f".{extension}: incremental lower bound {minimum_version}.")
+                progress(f".{extension}: incremental lower bound > {previous_group_max}.")
         elif incremental_group and progress:
             progress(f".{extension}: no known maximum yet, using full plan for this incremental PAK.")
 
@@ -190,4 +191,4 @@ def plan_group(
 
 def _raise_if_cancelled(cancel_requested: CancelCallback | None) -> None:
     if cancel_requested and cancel_requested():
-        raise InterruptedError("Brute-force planning was cancelled.")
+        raise InterruptedError("Suffix discovery planning was cancelled.")

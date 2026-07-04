@@ -6,13 +6,13 @@ from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
-from re_file_hash_exporter.core.bruteforce import brute_force_suffixes
-from re_file_hash_exporter.core.hash_utf16 import hash_mixed, hash_mixed_prepared_parts, prepare_mixed_text
-from re_file_hash_exporter.core.models import BruteForceMatch, BruteForceOptions, DmpScanResult
-from re_file_hash_exporter.core.pak_hash import PakHashGroup, pak_group_identity
+from re_file_hash_exporter.core.hashing.utf16 import hash_mixed, hash_mixed_prepared_parts, prepare_mixed_text
+from re_file_hash_exporter.core.models import SuffixDiscoveryMatch, SuffixDiscoveryOptions, DmpScanResult
+from re_file_hash_exporter.core.pak.reader import PakHashGroup, pak_group_identity
 from re_file_hash_exporter.core.search.candidate_policy import candidate_count_for_entries
 from re_file_hash_exporter.core.search.cpu_matcher import match_entries
 from re_file_hash_exporter.core.search.gpu_batches import iter_prepared_gpu_batches, prepare_gpu_bases
+from re_file_hash_exporter.core.search.gpu_batches import iter_prepared_gpu_suffix_batches
 from re_file_hash_exporter.core.search.gpu_pool import (
     MultiGpuSearchOutcome,
     _SharedHashView,
@@ -23,7 +23,8 @@ from re_file_hash_exporter.core.search.gpu_pool import (
     _init_gpu_worker,
 )
 from re_file_hash_exporter.core.search.path_catalog import RawPathEntry, collect_raw_path_entries_by_extension
-from re_file_hash_exporter.core.version_plan import numeric_range_plan
+from re_file_hash_exporter.core.suffix_discovery.engine import discover_suffixes
+from re_file_hash_exporter.core.versions.plan import numeric_range_plan
 
 
 class SearchOptimizationTests(unittest.TestCase):
@@ -128,7 +129,52 @@ class SearchOptimizationTests(unittest.TestCase):
         self.assertEqual(tuple(batch.upper_units[offset : offset + length]), prepared.upper_units)
         self.assertEqual(tuple(batch.lower_units[offset : offset + length]), prepared.lower_units)
 
-    def test_bruteforce_can_use_cached_pak_groups(self) -> None:
+    def test_incremental_gpu_hash_matches_full_path_hash_when_torch_cuda_available(self) -> None:
+        try:
+            import torch
+        except Exception as err:
+            self.skipTest(f"torch is not available: {err}")
+        if not torch.cuda.is_available():
+            self.skipTest("CUDA is not available")
+
+        from re_file_hash_exporter.core.gpu.torch_backend import (
+            hash_incremental_prepared_mixed_batch,
+            match_incremental_prepared_mixed_batch,
+            prepare_pak_hash_key_tensor,
+        )
+
+        bases = prepare_gpu_bases(
+            entries=[
+                RawPathEntry("a/b.tex", seen_plain=True, seen_streaming=False),
+                RawPathEntry("aa/b.tex", seen_plain=True, seen_streaming=False),
+            ],
+            extension="tex",
+            include_platform_suffixes=True,
+            language_mode="off",
+            include_streaming=False,
+            profiles={},
+        )
+        self.assertTrue(any(base.base_unit_count % 2 for base in bases))
+        batch = next(
+            iter_prepared_gpu_suffix_batches(
+                bases=bases,
+                versions=[7, 260101100],
+                batch_size=64,
+                cancel_requested=None,
+            )
+        )
+
+        hashes = hash_incremental_prepared_mixed_batch(batch, bases, device="cuda")
+        expected = [hash_mixed(batch.full_path_at(index, bases)) for index in range(len(batch))]
+
+        self.assertEqual(hashes, expected)
+
+        pak_hash_keys = prepare_pak_hash_key_tensor(torch, {expected[1], expected[-1], 0xFFFF_FFFF_FFFF_FFFF}, "cuda")
+        matched_indexes = match_incremental_prepared_mixed_batch(batch, bases, pak_hash_keys, device="cuda")
+
+        self.assertEqual(set(matched_indexes), {1, len(batch) - 1})
+
+    def test_suffix_discovery_can_use_cached_pak_groups(self) -> None:
         target = "natives/STM/foo/a.tex.7"
 
         class Cache:
@@ -136,11 +182,11 @@ class SearchOptimizationTests(unittest.TestCase):
                 return [PakHashGroup(Path("base.pak"), {hash_mixed(target)}, "base.pak", 0)]
 
         scan = DmpScanResult(unversioned_paths={"tex": Counter({"natives/STM/foo/a.tex": 1})})
-        result = brute_force_suffixes(
+        result = discover_suffixes(
             scan,
             [Path("base.pak")],
             {},
-            BruteForceOptions(
+            SuffixDiscoveryOptions(
                 selected_extensions=["tex"],
                 mode="custom",
                 custom_versions="7",
@@ -198,11 +244,11 @@ class SearchOptimizationTests(unittest.TestCase):
                 ]
 
         scan = DmpScanResult(unversioned_paths={"tex": Counter({"natives/STM/foo/a.tex": 1})})
-        result = brute_force_suffixes(
+        result = discover_suffixes(
             scan,
             [Path("unused.pak")],
             {},
-            BruteForceOptions(
+            SuffixDiscoveryOptions(
                 selected_extensions=["tex"],
                 mode="custom",
                 custom_versions="50,100",
@@ -220,7 +266,7 @@ class SearchOptimizationTests(unittest.TestCase):
             {high_main_version, low_sub_patch_version},
         )
 
-    def test_bruteforce_skips_known_versions_and_reports_new_suffix_only(self) -> None:
+    def test_suffix_discovery_rechecks_known_versions_as_family_baseline_evidence(self) -> None:
         known = "natives/STM/foo/a.rcol.27"
         new = "natives/STM/foo/a.rcol.28"
 
@@ -229,11 +275,11 @@ class SearchOptimizationTests(unittest.TestCase):
                 return [PakHashGroup(Path("base.pak"), {hash_mixed(known), hash_mixed(new)}, "base.pak", 0)]
 
         scan = DmpScanResult(unversioned_paths={"rcol": Counter({"natives/STM/foo/a.rcol": 1})})
-        result = brute_force_suffixes(
+        result = discover_suffixes(
             scan,
             [Path("base.pak")],
             {"rcol": Counter({27: 1})},
-            BruteForceOptions(
+            SuffixDiscoveryOptions(
                 selected_extensions=["rcol"],
                 mode="custom",
                 custom_versions="27-28",
@@ -246,10 +292,134 @@ class SearchOptimizationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.cancelled)
-        self.assertEqual([match.version for match in result.matches], [28])
-        self.assertEqual([match.full_path for match in result.matches], [new])
+        self.assertEqual([match.version for match in result.matches], [27, 28])
+        self.assertEqual([match.full_path for match in result.matches], [known, new])
 
-    def test_bruteforce_uses_multi_gpu_scheduler_when_multiple_devices_are_available(self) -> None:
+    def test_patch_with_no_new_candidates_after_family_hit_does_not_crash(self) -> None:
+        target = "natives/STM/foo/a.tex.7"
+        messages: list[str] = []
+
+        class Cache:
+            def load_groups(self, pak_paths, workers=0, progress=None):
+                return [
+                    PakHashGroup(
+                        Path("re_chunk_000.pak"),
+                        {hash_mixed(target)},
+                        "re_chunk_000.pak",
+                        0,
+                    ),
+                    PakHashGroup(
+                        Path("re_chunk_000.pak.patch_001.pak"),
+                        set(),
+                        "re_chunk_000.pak",
+                        1,
+                        patch_index=1,
+                    ),
+                ]
+
+        scan = DmpScanResult(unversioned_paths={"tex": Counter({"natives/STM/foo/a.tex": 1})})
+        result = discover_suffixes(
+            scan,
+            [Path("unused.pak")],
+            {},
+            SuffixDiscoveryOptions(
+                selected_extensions=["tex"],
+                mode="custom",
+                custom_versions="7",
+                include_platform_suffixes=False,
+                include_streaming=False,
+                language_mode="off",
+                processes=1,
+            ),
+            progress=messages.append,
+            pak_cache=Cache(),
+        )
+
+        self.assertFalse(result.cancelled)
+        self.assertEqual([match.full_path for match in result.matches], [target])
+        self.assertTrue(
+            any(
+                isinstance(message, str) and "no new candidate versions" in message
+                for message in messages
+            )
+        )
+
+    def test_suffix_discovery_uses_versioned_paths_as_suffix_discovery_evidence(self) -> None:
+        target = "natives/STM/foo/a.tex.8"
+
+        class Cache:
+            def load_groups(self, pak_paths, workers=0, progress=None):
+                return [PakHashGroup(Path("base.pak"), {hash_mixed(target)}, "base.pak", 0)]
+
+        scan = DmpScanResult(versioned_paths={"tex": Counter({"natives/STM/foo/a.tex": 1})})
+        result = discover_suffixes(
+            scan,
+            [Path("base.pak")],
+            {},
+            SuffixDiscoveryOptions(
+                selected_extensions=["tex"],
+                mode="custom",
+                custom_versions="8",
+                include_platform_suffixes=False,
+                include_streaming=False,
+                language_mode="off",
+                processes=1,
+            ),
+            pak_cache=Cache(),
+        )
+
+        self.assertFalse(result.cancelled)
+        self.assertEqual([match.full_path for match in result.matches], [target])
+
+    def test_base_families_do_not_share_discovered_version_skip_state(self) -> None:
+        main_target = "natives/STM/main/a.tex.100"
+        sub_target = "natives/STM/sub/a.tex.100"
+
+        class Cache:
+            def load_groups(self, pak_paths, workers=0, progress=None):
+                return [
+                    PakHashGroup(Path("re_chunk_000.pak"), {hash_mixed(main_target)}, "re_chunk_000.pak", 0),
+                    PakHashGroup(
+                        Path("re_chunk_000.pak.sub_000.pak"),
+                        {hash_mixed(sub_target)},
+                        "re_chunk_000.pak.sub_000.pak",
+                        1,
+                    ),
+                ]
+
+        scan = DmpScanResult(
+            unversioned_paths={
+                "tex": Counter(
+                    {
+                        "natives/STM/main/a.tex": 1,
+                        "natives/STM/sub/a.tex": 1,
+                    }
+                )
+            }
+        )
+        result = discover_suffixes(
+            scan,
+            [Path("unused.pak")],
+            {},
+            SuffixDiscoveryOptions(
+                selected_extensions=["tex"],
+                mode="custom",
+                custom_versions="100",
+                processes=1,
+                include_platform_suffixes=False,
+                include_streaming=False,
+                language_mode="off",
+            ),
+            pak_cache=Cache(),
+        )
+
+        self.assertFalse(result.cancelled)
+        self.assertEqual(
+            {match.full_path for match in result.matches},
+            {main_target, sub_target},
+        )
+
+    def test_suffix_discovery_uses_multi_gpu_scheduler_when_multiple_devices_are_available(self) -> None:
         target = "natives/STM/foo/a.tex.7"
 
         class Cache:
@@ -263,25 +433,25 @@ class SearchOptimizationTests(unittest.TestCase):
             self.assertEqual(kwargs["prefetch_batches_per_device"], 2)
             kwargs["found_versions"].add(7)
             return MultiGpuSearchOutcome(
-                matches=[BruteForceMatch("tex", 7, "foo/a.tex", target)]
+                matches=[SuffixDiscoveryMatch("tex", 7, "foo/a.tex", target)]
             )
 
         scan = DmpScanResult(unversioned_paths={"tex": Counter({"natives/STM/foo/a.tex": 1})})
         with (
             patch(
-                "re_file_hash_exporter.core.bruteforce.resolve_cuda_devices",
+                "re_file_hash_exporter.core.suffix_discovery.engine.resolve_cuda_devices",
                 return_value=(True, "torch CUDA backend ready: 2 device(s): cuda:0 A, cuda:1 B", [0, 1]),
             ),
             patch(
-                "re_file_hash_exporter.core.bruteforce.search_extension_multi_gpu",
+                "re_file_hash_exporter.core.suffix_discovery.engine.search_extension_multi_gpu",
                 side_effect=fake_multi_gpu_search,
             ) as multi_gpu_search,
         ):
-            result = brute_force_suffixes(
+            result = discover_suffixes(
                 scan,
                 [Path("base.pak")],
                 {},
-                BruteForceOptions(
+                SuffixDiscoveryOptions(
                     selected_extensions=["tex"],
                     mode="custom",
                     custom_versions="7",
@@ -357,6 +527,7 @@ class SearchOptimizationTests(unittest.TestCase):
                 self.assertIn(3, view)
                 self.assertIn(99, view)
                 self.assertNotIn(4, view)
+                self.assertEqual(list(view), [3, 7, 99])
             finally:
                 view.close()
         finally:

@@ -1,1 +1,1 @@
-"""Core scanning, config, pak hash, and brute-force logic."""
+"""Core scanning, config, PAK hash, and suffix discovery logic."""

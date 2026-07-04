@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import importlib
+import signal
 import sys
 import tempfile
+import threading
 import unittest
 from collections import Counter
 from io import StringIO
 from pathlib import Path
 
-from re_file_hash_exporter.cli import ConfigError, Step2ProgressRenderer, load_cli_config, select_extensions_from_scan
-from re_file_hash_exporter.core.models import BruteForceProgress, DmpScanResult
+from re_file_hash_exporter.cli import (
+    ConfigError,
+    Step2ProgressRenderer,
+    _step2_interrupt_handler,
+    load_cli_config,
+    select_extensions_from_scan,
+)
+from re_file_hash_exporter.core.models import SuffixDiscoveryProgress, DmpScanResult
 
 
 class FakeRichConsole:
@@ -203,9 +211,45 @@ gpu_prefetch_batches_per_device = 4
             ["rcol", "tex"],
         )
 
+    def test_include_versioned_extensions_expands_default_selection(self) -> None:
+        scan = DmpScanResult(
+            unversioned_paths={"tex": Counter({"natives/STM/foo/a.tex": 1})},
+            versioned_paths={"rcol": Counter({"natives/STM/foo/a.rcol": 1})},
+        )
+
+        self.assertEqual(
+            select_extensions_from_scan(scan, None, include_versioned_extensions=True),
+            ["rcol", "tex"],
+        )
+
+    def test_step2_sigint_first_interrupt_requests_graceful_stop(self) -> None:
+        stop_event = threading.Event()
+        messages: list[str] = []
+        previous_handler = signal.getsignal(signal.SIGINT)
+
+        with _step2_interrupt_handler(stop_event, messages.append):
+            handler = signal.getsignal(signal.SIGINT)
+            self.assertNotEqual(handler, previous_handler)
+            handler(signal.SIGINT, None)
+
+            self.assertTrue(stop_event.is_set())
+            self.assertIn("Stopping Step 2 gracefully", messages[0])
+
+        self.assertEqual(signal.getsignal(signal.SIGINT), previous_handler)
+
+    def test_step2_sigint_second_interrupt_is_keyboard_interrupt(self) -> None:
+        stop_event = threading.Event()
+        messages: list[str] = []
+
+        with _step2_interrupt_handler(stop_event, messages.append):
+            handler = signal.getsignal(signal.SIGINT)
+            handler(signal.SIGINT, None)
+            with self.assertRaises(KeyboardInterrupt):
+                handler(signal.SIGINT, None)
+
     def test_step2_progress_renderer_updates_rich_progress_and_logs_above_it(self) -> None:
         fake_progress = FakeRichProgress()
-        progress = BruteForceProgress(
+        progress = SuffixDiscoveryProgress(
             completed_extensions=1,
             total_extensions=2,
             completed_scan_count=50,
@@ -232,7 +276,7 @@ gpu_prefetch_batches_per_device = 4
 
     def test_step2_progress_renderer_resets_rich_eta_when_phase_progress_rewinds(self) -> None:
         fake_progress = FakeRichProgress()
-        planning_done = BruteForceProgress(
+        planning_done = SuffixDiscoveryProgress(
             completed_extensions=2,
             total_extensions=2,
             completed_scan_count=500,
@@ -241,7 +285,7 @@ gpu_prefetch_batches_per_device = 4
             phase="planning",
             phase_detail="Planning .tex",
         )
-        search_started = BruteForceProgress(
+        search_started = SuffixDiscoveryProgress(
             completed_extensions=0,
             total_extensions=2,
             completed_scan_count=0,
@@ -269,7 +313,7 @@ gpu_prefetch_batches_per_device = 4
         def raise_missing_rich():
             raise missing_rich
 
-        progress = BruteForceProgress(
+        progress = SuffixDiscoveryProgress(
             completed_extensions=0,
             total_extensions=1,
             completed_scan_count=0,

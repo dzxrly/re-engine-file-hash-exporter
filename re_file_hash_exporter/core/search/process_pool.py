@@ -6,18 +6,18 @@ from itertools import islice
 from multiprocessing import Manager
 from typing import Callable
 
-from ..models import BruteForceMatch
-from ..version_plan import VersionPlan
+from ..models import SuffixDiscoveryMatch
+from ..versions.plan import VersionPlan
 from .cpu_matcher import ChunkResult, clear_worker_state, init_worker, match_chunk, match_entries
 from .path_catalog import RawPathEntry
-from .progress import BruteForceProgressTracker, ProgressCallback
+from .progress import SuffixDiscoveryProgressTracker, ProgressCallback
 
 CancelCallback = Callable[[], bool]
 
 
 @dataclass(slots=True)
 class CpuSearchOutcome:
-    matches: list[BruteForceMatch]
+    matches: list[SuffixDiscoveryMatch]
     cancelled: bool = False
 
 
@@ -62,7 +62,7 @@ class CpuSearchExecutor:
         language_mode: str,
         include_streaming: bool,
         version_chunk_size: int,
-        tracker: BruteForceProgressTracker,
+        tracker: SuffixDiscoveryProgressTracker,
         progress: ProgressCallback | None,
         found_versions: set[int] | None = None,
     ) -> CpuSearchOutcome:
@@ -111,12 +111,12 @@ class CpuSearchExecutor:
         include_streaming: bool,
         version_chunk_size: int,
         total_task_chunks: int,
-        tracker: BruteForceProgressTracker,
+        tracker: SuffixDiscoveryProgressTracker,
         progress: ProgressCallback | None,
         found_versions: set[int],
     ) -> CpuSearchOutcome:
         init_worker(self.pak_hashes, self.stopped, self.profiles)
-        matches: list[BruteForceMatch] = []
+        matches: list[SuffixDiscoveryMatch] = []
         reported_versions: set[int] = set()
         completed = 0
         try:
@@ -127,7 +127,7 @@ class CpuSearchExecutor:
                 for entry_chunk in entry_chunks:
                     if self.stopped():
                         if progress:
-                            progress("Stop requested. Brute-force search cancelled.")
+                            progress("Stop requested. Suffix discovery cancelled.")
                         tracker.emit(force=True)
                         return CpuSearchOutcome(matches, cancelled=True)
                     completed += 1
@@ -155,7 +155,7 @@ class CpuSearchExecutor:
                     )
         except InterruptedError:
             if progress:
-                progress("Stop requested. Brute-force search cancelled.")
+                progress("Stop requested. Suffix discovery cancelled.")
             tracker.emit(force=True)
             return CpuSearchOutcome(matches, cancelled=True)
         finally:
@@ -174,14 +174,14 @@ class CpuSearchExecutor:
         include_streaming: bool,
         version_chunk_size: int,
         total_task_chunks: int,
-        tracker: BruteForceProgressTracker,
+        tracker: SuffixDiscoveryProgressTracker,
         progress: ProgressCallback | None,
         found_versions: set[int],
     ) -> CpuSearchOutcome:
         if self.executor is None:
             raise RuntimeError("CPU search pool was not initialized.")
 
-        matches: list[BruteForceMatch] = []
+        matches: list[SuffixDiscoveryMatch] = []
         reported_versions: set[int] = set()
         completed = 0
         shared_found_versions = (
@@ -214,7 +214,7 @@ class CpuSearchExecutor:
                         for future in pending:
                             future.cancel()
                         if progress:
-                            progress("Stop requested. Cancelling pending brute-force work...")
+                            progress("Stop requested. Cancelling pending suffix discovery work...")
 
                     done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
                     for future in done:
@@ -239,12 +239,12 @@ class CpuSearchExecutor:
                         break
                 if self.stopped():
                     if progress:
-                        progress("Brute-force search stopped by user.")
+                        progress("Suffix discovery stopped by user.")
                     tracker.emit(force=True)
                     return CpuSearchOutcome(matches, cancelled=True)
         except InterruptedError:
             if progress:
-                progress("Stop requested. Brute-force search cancelled.")
+                progress("Stop requested. Suffix discovery cancelled.")
             tracker.emit(force=True)
             return CpuSearchOutcome(matches, cancelled=True)
 
@@ -254,7 +254,7 @@ class CpuSearchExecutor:
 
 
 def _record_chunk_matches(
-    out: list[BruteForceMatch],
+    out: list[SuffixDiscoveryMatch],
     extension: str,
     completed: int,
     total: int,
@@ -277,7 +277,7 @@ def _record_chunk_matches(
     for raw_path, version, full_path in new_matches:
         reported_versions.add(version)
         out.append(
-            BruteForceMatch(
+            SuffixDiscoveryMatch(
                 extension=extension,
                 version=version,
                 raw_path=raw_path,

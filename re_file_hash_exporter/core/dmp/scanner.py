@@ -4,8 +4,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Callable, DefaultDict
 
-from .models import DmpScanResult
-from .path_parser import (
+from ..models import DmpScanResult
+from .parser import (
     accept_char,
     looks_like_game_resource_path,
     resource_suffix_from_path,

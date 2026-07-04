@@ -4,27 +4,27 @@
 
 `RE File Hash Exporter` is a small GUI tool for building `config.toml` files for RE Engine DMP and PAK workflows.
 
-It scans resource paths from a selected `.DMP` file, exports known versioned suffixes, reports paths whose suffix versions are missing, and can optionally brute-force missing suffix versions against PAK entry hashes.
+It scans resource paths from a selected `.DMP` file, exports known versioned suffixes, reports paths whose suffix versions are missing, and can optionally discover suffix versions for selected extensions against PAK entry hashes.
 
 ## Features
 
 - Scan UTF-16LE resource paths from one exact `.DMP` file.
 - Export the first-step `suffix_map` for paths that already contain numeric suffixes in the DMP.
 - Group and report raw paths such as `name.ext` that do not include `.version`.
-- Let the user select missing extensions and brute-force candidate version suffixes.
+- Let the user select extensions and discover candidate version suffixes from current DMP path evidence.
 - Provide `auto_detect` candidate planning from editable presets in `file_suffix_profiles.json`.
 - Optionally show already versioned extensions in Step 2 so they can be searched for additional suffix versions.
 - Match candidates against PAK metadata hashes without unpacking PAK content.
 - Support multiple PAK files.
 - Cache PAK metadata between repeated Step 2 runs when the selected PAK files do not change.
-- Use CPU multiprocessing for brute-force matching.
+- Use CPU multiprocessing for suffix discovery matching.
 - Reuse CPU worker pools per PAK group and reuse precomputed UTF-16 hash prefix states.
 - Use torch CUDA acceleration when `GPU acceleration (CUDA only)` is enabled and a CUDA-enabled `torch` install is available.
 - Use multiple CUDA devices in parallel when more than one GPU is selected or visible.
 - Reduce GPU-side search overhead by batching pre-encoded UTF-16 candidate units instead of complete path strings.
 - Show GPU-specific options only when GPU mode is requested.
-- Allow stopping brute-force matching at any time.
-- Lock file inputs and step options while a scan or brute-force task is running.
+- Allow stopping suffix discovery at any time.
+- Lock file inputs and step options while a scan or suffix discovery task is running.
 
 ## Requirements
 
@@ -54,6 +54,7 @@ python main.py cli <config-file.toml>
 
 Relative paths inside the file are resolved from the config file's directory. `output_path` defaults to `config.toml` in the same directory.
 During Step 2, CLI mode uses a Rich progress bar fixed at the bottom of the terminal while logs scroll above it.
+Press `Ctrl+C` once during Step 2 to request a graceful stop; partial matches found so far are merged into the output config, matching the GUI `Stop` behavior. Press `Ctrl+C` again to force interruption.
 
 Complete example:
 
@@ -87,7 +88,7 @@ gpu_workers_per_device = 1
 gpu_batch_sizes = ""
 ```
 
-Recommended layout: put input/output and PAK selection at the top level, and put brute-force options under `[step2]`. Step 2 options may also be placed at the top level. A legacy `[bruteforce]` table is accepted, but `[step2]` takes precedence when both exist.
+Recommended layout: put input/output and PAK selection at the top level, and put suffix discovery options under `[step2]`. Step 2 options may also be placed at the top level. A legacy `[bruteforce]` table is accepted, but `[step2]` takes precedence when both exist.
 
 Top-level fields:
 
@@ -105,7 +106,7 @@ Top-level fields:
 
 | Field | Type and default | Description |
 | --- | --- | --- |
-| `selected_extensions` | string, string array, or omitted | Extensions to search. Omit or use `"all_missing"` to search missing extensions from Step 1. `"missing"` and `"auto"` are aliases. Use `"all"` to include every missing extension and, when `include_versioned_extensions = true`, versioned extensions too. CSV strings such as `"tex,rcol"` and arrays such as `["tex", "rcol"]` are accepted. Leading dots are optional. |
+| `selected_extensions` | string, string array, or omitted | Extensions to search. Omit or use `"all_missing"` to search extensions with unversioned paths from Step 1. `"missing"` and `"auto"` are aliases. Use `"all"` to include every extension with any Step 1 path evidence. CSV strings such as `"tex,rcol"` and arrays such as `["tex", "rcol"]` are accepted. Leading dots are optional. |
 | `mode` | string, default `"small_range"` | Candidate version planning mode. Allowed values: `"small_range"`, `"adaptive"`, `"custom"`, `"auto_detect"`. |
 | `min_version` | integer, default `0` | In `small_range`, the inclusive lower version. In `auto_detect` numeric profiles, how far to expand below the preset minimum. Must be non-negative. |
 | `max_version` | integer, default `4096` | In `small_range`, the inclusive upper version. In `auto_detect` numeric profiles, how far to expand above the preset maximum. Must be at least `min_version` except in `auto_detect`. |
@@ -117,7 +118,7 @@ Top-level fields:
 | `include_platform_suffixes` | boolean, default `true` | Generate platform suffix variants such as `.STM` and `.X64` when path evidence suggests they may be needed. |
 | `language_mode` | string, default `"localized"` | Language suffix mode. Allowed values: `"localized"`, `"off"`, `"all"`. |
 | `include_streaming` | boolean, default `true` | Generate `streaming/` path variants when path evidence suggests they may be needed. |
-| `include_versioned_extensions` | boolean, default `false` | Allow Step 2 to search extensions that already had known suffixes in Step 1. Useful with `selected_extensions = "all"`. |
+| `include_versioned_extensions` | boolean, default `false` | When `selected_extensions` is omitted or `"all_missing"`, also auto-select extensions that only had versioned path evidence in Step 1. Once an extension is selected, Step 2 always uses both versioned and unversioned raw paths as evidence. |
 | `request_gpu` | boolean, default `false` | Request torch CUDA acceleration. If CUDA or torch is unavailable, the search falls back to CPU and logs the reason. |
 | `gpu_batch_size` | integer, default `16384` | Default GPU candidate batch size for every selected CUDA device. This is not auto-tuned. |
 | `gpu_devices` | `"auto"`, integer, or integer array, default `[]` | CUDA devices to use. `"auto"` or an empty value uses every visible CUDA device. Examples: `0`, `[0, 1, 2, 3]`, `"0,1"`. |
@@ -132,9 +133,9 @@ Use TOML booleans (`true` / `false`) and integers for numeric fields. Boolean st
 2. Choose where to save `config.toml`.
 3. Add one or more `.pak` files.
 4. Run Step 1 to scan the DMP and export known suffixes.
-5. If Step 1 reports missing extensions, select the extensions you want to search.
-6. Optionally enable `Show versioned extensions` to search extensions that already have known suffixes.
-7. Run Step 2 to brute-force suffix versions and merge successful matches back into `config.toml`.
+5. Select the extensions you want to search from the Step 1 path evidence.
+6. Optionally enable `Show versioned-only extensions` to list extensions that only appeared with known suffixes.
+7. Run Step 2 to discover suffix versions and merge successful matches back into `config.toml`.
 
 Step 2 stays disabled until Step 1 finishes successfully.
 While Step 1 or Step 2 is running, file inputs and task options are locked. During Step 2, only `Stop` remains available.
@@ -146,9 +147,9 @@ After choosing an output path, the tool writes:
 - `config.toml`: a config file compatible with ree-path-searcher / ree-pak-researcher style workflows.
 - `<name>.missing_versions.txt`: a report of raw paths found in Step 1 without numeric suffix versions.
 
-## Brute-Force Strategy
+## Suffix Discovery Strategy
 
-Step 2 takes the selected missing extensions from the Step 1 raw path list and generates candidates such as:
+Step 2 takes the selected extensions from the Step 1 raw path evidence and generates candidates such as:
 
 ```text
 natives/STM/<raw_path>.<version>
@@ -159,7 +160,7 @@ natives/STM/<raw_path>.<version>.STM
 
 The tool computes the RE Engine mixed UTF-16 hash for each candidate and compares it with the hash set read from the PAK entry tables. Successful matches are merged into `suffix_map`, then `config.toml` is saved again.
 
-Candidate generation is profile-guided. Step 1 keeps light path evidence for each raw path, including whether the DMP reference was seen under `streaming/` and whether a platform tail such as `.STM` or `.X64` was already present. Step 2 uses that evidence together with `file_suffix_profiles.json` to avoid unnecessary path variants.
+Candidate generation is profile-guided. Step 1 keeps light path evidence for each raw path, including whether the DMP reference was seen under `streaming/` and whether a platform tail such as `.STM` or `.X64` was already present. Step 2 uses both versioned and unversioned raw paths for selected extensions, together with `file_suffix_profiles.json`, to avoid unnecessary path variants.
 
 ## Candidate Modes
 
