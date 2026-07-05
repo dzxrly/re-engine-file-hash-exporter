@@ -75,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--ree-projects-github",
+        "-r",
         action="store_true",
         help="Clone Ekey/REE.PAK.Tool and import all Projects/*.list files.",
     )
