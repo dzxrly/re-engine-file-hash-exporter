@@ -25,9 +25,12 @@ dist/
 .idea/
 
 # Generated exporter output
-config.toml
 *.missing_versions.txt
 *.log
+
+# Runtime fetched repositories
+.runtime/
+runtime/
 
 # Temporary files
 *.tmp
@@ -39,4 +42,3 @@ debug/
 .codex/
 .claude/
 .codex*/
-output/
