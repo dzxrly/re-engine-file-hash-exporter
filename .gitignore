@@ -25,6 +25,7 @@ dist/
 .idea/
 
 # Generated exporter output
+config.toml
 *.missing_versions.txt
 *.log
 
@@ -42,3 +43,4 @@ debug/
 .codex/
 .claude/
 .codex*/
+output/
