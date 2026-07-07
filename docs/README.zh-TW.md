@@ -175,19 +175,19 @@ natives/STM/<raw_path>.<version>.STM
 
 ## 語言模式
 
-`Languages` 控制 Step 2 是否產生 `.Ja`、`.En`、`.ZhCN` 等語言後綴變體。
+`Languages` 控制 Step 2 是否產生 `.Ja` 和 `.En` 語言探針後綴。這些探針用於確認數字後綴是否存在，避免把所有 RE Engine 語言標籤都展開搜尋。
 
 - `localized`：預設模式。只對看起來是本地化資源的路徑產生語言後綴：在 `file_suffix_profiles.json` 中標記了 `"language_search": true` 的副檔名、內建本地化副檔名（例如 `.msg`、`.asrc`、`.bnk`、`.pck`、`.sbnk`、`.spck`），或 raw path 中包含 `/message/`、`/text/`、`/subtitle/`、`/voice`、`/dialog/`、`/localization/` 等本地化目錄關鍵詞。
 - `off`：完全不產生語言後綴變體。
-- `all`：對所有選中的路徑都產生語言後綴變體，等同於舊版的寬搜尋行為。
+- `all`：對所有選中的路徑都產生 `.Ja` 和 `.En` 探針後綴。
 
-預設檔案使用普通 JSON，方便後續不改程式碼直接調整。它提供基準範圍和優先值，最終範圍由 UI 決定擴展多少。在 `extensions` 下新增或修改副檔名即可：普通數字後綴使用 `suffix_type = "numeric"` 和可選 `priority_versions`，`YYMMDD` 加數字尾號的日期型後綴使用 `suffix_type = "date_code"` 和可選 `priority_dates`、`priority_tails`。只有常見 RE Engine 語言後綴的檔案類型才建議添加 `"language_search": true`。
+預設檔案使用普通 JSON，方便後續不改程式碼直接調整。頂層 `languages` 陣列會被產生的 TOML 配置檔直接復用，預設保留完整 RE Engine 語言列表，並且獨立於 Step 2 的 `.Ja` / `.En` 搜尋探針。它也提供基準範圍和優先值，最終範圍由 UI 決定擴展多少。在 `extensions` 下新增或修改副檔名即可：普通數字後綴使用 `suffix_type = "numeric"` 和可選 `priority_versions`，`YYMMDD` 加數字尾號的日期型後綴使用 `suffix_type = "date_code"` 和可選 `priority_dates`、`priority_tails`。只有常見 RE Engine 語言後綴的檔案類型才建議添加 `"language_search": true`。
 
 ## 候選剪枝
 
 每個副檔名 profile 還可以控制路徑變體：
 
-- `language_search`：`true` 為該副檔名啟用語言尾綴；`false` 即使在寬語言模式下也停用。
+- `language_search`：`true` 為該副檔名啟用 `.Ja` 和 `.En` 語言探針後綴；`false` 即使在寬語言模式下也停用。
 - `streaming_search`：`false` 停用 `streaming/` 變體，`true` 對每條路徑都搜尋 streaming，`"observed"` 只對 DMP 中確實見過 streaming 的路徑搜尋。
 - `platform_search`：`false` 停用 `.X64` / `.STM` 變體，`"observed"` 只搜尋 DMP 中見過的平台尾綴，也可以寫成 `["STM"]` 這類清單來明確限制。
 

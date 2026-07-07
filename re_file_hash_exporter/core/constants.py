@@ -36,6 +36,8 @@ LANGUAGES: list[str] = [
     "Es419",
 ]
 
+LANGUAGE_SEARCH_SUFFIXES: list[str] = ["Ja", "En"]
+
 DEFAULT_PREFIXES: list[str] = ["natives/STM/"]
 DEFAULT_PLATFORM_SUFFIXES: list[str] = ["X64", "STM"]
 

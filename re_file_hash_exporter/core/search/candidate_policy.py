@@ -6,7 +6,7 @@ from typing import Iterable
 from ..constants import (
     DEFAULT_PLATFORM_SUFFIXES,
     DEFAULT_PREFIXES,
-    LANGUAGES,
+    LANGUAGE_SEARCH_SUFFIXES,
     LANGUAGE_MODE_ALL,
     LANGUAGE_MODE_LOCALIZED,
     LANGUAGE_MODE_OFF,
@@ -155,15 +155,15 @@ def _language_suffixes(extension: str, raw_path: str, language_mode: str, profil
     if language_policy is False or language_mode == LANGUAGE_MODE_OFF:
         return ()
     if language_mode == LANGUAGE_MODE_ALL or language_policy is True:
-        return tuple(LANGUAGES)
+        return tuple(LANGUAGE_SEARCH_SUFFIXES)
 
     normalized_extension = extension.lower().lstrip(".")
     if normalized_extension in LOCALIZED_RESOURCE_EXTENSIONS:
-        return tuple(LANGUAGES)
+        return tuple(LANGUAGE_SEARCH_SUFFIXES)
 
     normalized_path = "/" + raw_path.replace("\\", "/").lower().lstrip("/")
     if any(keyword in normalized_path for keyword in LOCALIZED_PATH_KEYWORDS):
-        return tuple(LANGUAGES)
+        return tuple(LANGUAGE_SEARCH_SUFFIXES)
     return ()
 
 
@@ -171,4 +171,3 @@ def _profile_value(profile: dict, key: str):
     if not profile:
         return None
     return profile.get(key)
-

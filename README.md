@@ -175,19 +175,19 @@ As a rule of thumb, start with `auto_detect` when searching several different fi
 
 ## Language Modes
 
-`Languages` controls whether Step 2 adds `.Ja`, `.En`, `.ZhCN`, and other language suffix variants.
+`Languages` controls whether Step 2 adds the `.Ja` and `.En` probe language suffixes. These probes are used to confirm that a numeric suffix exists without expanding every RE Engine language tag.
 
 - `localized`: the default. Language suffixes are generated only for likely localized resources: extensions marked with `"language_search": true` in `file_suffix_profiles.json`, built-in localized extensions such as `.msg`, `.asrc`, `.bnk`, `.pck`, `.sbnk`, and `.spck`, or raw paths containing localization-style folders such as `/message/`, `/text/`, `/subtitle/`, `/voice`, `/dialog/`, or `/localization/`.
 - `off`: never generates language suffix variants.
-- `all`: generates language suffix variants for every selected path, matching the older broad-search behavior.
+- `all`: generates the `.Ja` and `.En` probe suffix variants for every selected path.
 
-The preset file is intentionally plain JSON so it can be tuned without code changes. It defines baseline ranges and priority values, while the UI controls how far those ranges expand. Add or edit entries under `extensions`; use `suffix_type = "numeric"` with optional `priority_versions`, or `suffix_type = "date_code"` with optional `priority_dates` and `priority_tails`. Add `"language_search": true` only for file types whose paths commonly use RE Engine language suffixes.
+The preset file is intentionally plain JSON so it can be tuned without code changes. Its top-level `languages` array is reused when generating TOML config files and keeps the full RE Engine language list by default, independent from the `.Ja` / `.En` Step 2 search probes. It also defines baseline ranges and priority values, while the UI controls how far those ranges expand. Add or edit entries under `extensions`; use `suffix_type = "numeric"` with optional `priority_versions`, or `suffix_type = "date_code"` with optional `priority_dates` and `priority_tails`. Add `"language_search": true` only for file types whose paths commonly use RE Engine language suffixes.
 
 ## Candidate Pruning
 
 Each extension profile can also narrow path variants:
 
-- `language_search`: `true` enables language suffixes for the extension; `false` disables them even in broad language modes.
+- `language_search`: `true` enables `.Ja` and `.En` language suffix probes for the extension; `false` disables them even in broad language modes.
 - `streaming_search`: `false` disables `streaming/` variants, `true` searches them for every path, and `"observed"` searches them only for paths that were seen as streaming references in the DMP.
 - `platform_search`: `false` disables `.X64` / `.STM` variants, `"observed"` searches only platform suffixes seen in the DMP, and a list such as `["STM"]` limits the suffixes explicitly.
 

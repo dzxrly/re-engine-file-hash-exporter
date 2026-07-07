@@ -21,6 +21,7 @@ class ProfileUpdateScriptTests(unittest.TestCase):
         data = {
             "version": 1,
             "description": "Example",
+            "languages": ["Ja", "En"],
             "suffix_types": {"numeric": "Numbers"},
             "extensions": {
                 "mesh": {
@@ -35,7 +36,7 @@ class ProfileUpdateScriptTests(unittest.TestCase):
         text = update.profile_data_to_toml(data)
         parsed = tomllib.loads(text)
 
-        self.assertIn("languages", parsed)
+        self.assertEqual(parsed["languages"], ["Ja", "En"])
         self.assertEqual(parsed["prefixes"], ["natives/STM/"])
         self.assertFalse(parsed["use_builtin_suffix_map"])
         self.assertEqual(parsed["suffix_map"]["mesh"], [240101007])
@@ -52,6 +53,7 @@ class ProfileUpdateScriptTests(unittest.TestCase):
                     {
                         "version": 1,
                         "description": "Original",
+                        "languages": ["Ja"],
                         "suffix_types": {"numeric": "Numbers"},
                         "extensions": {
                             "mesh": {
@@ -66,6 +68,7 @@ class ProfileUpdateScriptTests(unittest.TestCase):
             toml_path.write_text(
                 """
 description = "Updated"
+languages = ["Ja", "En"]
 
 [extensions.".Mesh"]
 priority_tails = [7]
@@ -91,11 +94,13 @@ priority_versions = [1, 2, 3]
             self.assertEqual(exit_code, 0)
             merged = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(merged["description"], "Updated")
+            self.assertEqual(merged["languages"], ["Ja", "En"])
             self.assertEqual(merged["extensions"]["mesh"]["priority_dates"], ["2024-01-01"])
             self.assertEqual(merged["extensions"]["mesh"]["priority_tails"], [7])
             self.assertEqual(merged["extensions"]["tex"]["priority_versions"], [1, 2, 3])
             self.assertTrue(output_path.is_file())
             exported = tomllib.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(exported["languages"], ["Ja", "En"])
             self.assertEqual(exported["suffix_map"]["mesh"], [240101007])
             self.assertEqual(exported["suffix_map"]["tex"], [1, 2, 3])
 

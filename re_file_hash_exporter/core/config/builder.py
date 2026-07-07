@@ -7,10 +7,10 @@ from ..constants import (
     DEFAULT_PLATFORM_SUFFIXES,
     DEFAULT_PREFIXES,
     IGNORED_RESOURCE_EXTENSIONS,
-    LANGUAGES,
     MISSING_REPORT_SUFFIX,
 )
 from ..models import DmpScanResult, SuffixCounts
+from ..versions.profiles import load_profile_languages
 
 
 def merge_suffix_counts(*maps: SuffixCounts) -> SuffixCounts:
@@ -52,7 +52,7 @@ def build_config_text(
     platform_suffixes: list[str] | None = None,
     use_builtin_suffix_map: bool = False,
 ) -> str:
-    languages = languages or LANGUAGES
+    languages = languages if languages is not None else load_profile_languages()
     prefixes = prefixes or DEFAULT_PREFIXES
     platform_suffixes = platform_suffixes or DEFAULT_PLATFORM_SUFFIXES
 

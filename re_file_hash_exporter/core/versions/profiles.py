@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ..constants import IGNORED_RESOURCE_EXTENSIONS
+from ..constants import IGNORED_RESOURCE_EXTENSIONS, LANGUAGE_SEARCH_SUFFIXES
 from ..models import SuffixDiscoveryOptions, SuffixCounts
 from .plan import VersionPlan, date_code_plan, discrete_version_plan, empty_version_plan, numeric_range_plan
 
@@ -37,6 +37,37 @@ def load_version_profiles() -> dict[str, dict[str, Any]]:
                 and str(extension).lower().lstrip(".") not in IGNORED_RESOURCE_EXTENSIONS
             }
     return {}
+
+
+def load_profile_languages() -> list[str]:
+    for path in profile_file_candidates():
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError(f"{PROFILE_FILE_NAME}: expected a JSON object.")
+            return profile_languages_from_data(data, source=str(path))
+    return list(LANGUAGE_SEARCH_SUFFIXES)
+
+
+def profile_languages_from_data(data: dict[str, Any], source: str = PROFILE_FILE_NAME) -> list[str]:
+    values = data.get("languages")
+    if values is None:
+        return list(LANGUAGE_SEARCH_SUFFIXES)
+    if not isinstance(values, list):
+        raise ValueError(f"{source}: `languages` must be a string array.")
+
+    languages: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            raise ValueError(f"{source}: `languages` must contain only strings.")
+        language = value.strip()
+        if not language or language in seen:
+            continue
+        languages.append(language)
+        seen.add(language)
+
+    return languages or list(LANGUAGE_SEARCH_SUFFIXES)
 
 
 def default_date_range() -> tuple[str, str]:
@@ -264,4 +295,3 @@ def _ordered_unique(values) -> list[int]:
         seen.add(value)
         out.append(value)
     return out
-

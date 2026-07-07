@@ -9,7 +9,7 @@ from unittest.mock import patch
 from re_file_hash_exporter.core.hashing.utf16 import hash_mixed, hash_mixed_prepared_parts, prepare_mixed_text
 from re_file_hash_exporter.core.models import SuffixDiscoveryMatch, SuffixDiscoveryOptions, DmpScanResult
 from re_file_hash_exporter.core.pak.reader import PakHashGroup, pak_group_identity
-from re_file_hash_exporter.core.search.candidate_policy import candidate_count_for_entries
+from re_file_hash_exporter.core.search.candidate_policy import candidate_count_for_entries, iter_candidate_bases
 from re_file_hash_exporter.core.search.cpu_matcher import match_entries
 from re_file_hash_exporter.core.search.gpu_batches import iter_prepared_gpu_batches, prepare_gpu_bases
 from re_file_hash_exporter.core.search.gpu_batches import iter_prepared_gpu_suffix_batches
@@ -59,6 +59,33 @@ class SearchOptimizationTests(unittest.TestCase):
                 profiles={},
             ),
             2,
+        )
+
+    def test_language_suffix_search_uses_probe_languages_only(self) -> None:
+        entry = RawPathEntry("message/foo.msg", seen_plain=True)
+        bases = list(
+            iter_candidate_bases(
+                entry,
+                "msg",
+                include_platform_suffixes=False,
+                language_mode="all",
+                include_streaming=False,
+                profiles={},
+            )
+        )
+
+        self.assertEqual([base.language_suffixes for base in bases], [("Ja", "En")])
+        self.assertEqual(
+            candidate_count_for_entries(
+                [entry],
+                "msg",
+                version_count=1,
+                include_platform_suffixes=False,
+                language_mode="all",
+                include_streaming=False,
+                profiles={},
+            ),
+            3,
         )
 
     def test_cpu_matcher_reuses_prefix_state_and_finds_streaming_platform_match(self) -> None:

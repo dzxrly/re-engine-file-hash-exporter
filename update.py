@@ -19,6 +19,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from re_file_hash_exporter.core.config.builder import build_config_text
 from re_file_hash_exporter.core.dmp.parser import resource_suffix_from_path
+from re_file_hash_exporter.core.versions.profiles import profile_languages_from_data
 
 
 # Replace this with a GitHub-compatible mirror base URL when needed.
@@ -30,7 +31,7 @@ DEFAULT_JSON_PATH = ROOT / "file_suffix_profiles.json"
 DEFAULT_TOML_PATH = ROOT / "universal_config.toml"
 EKEY_REE_PAK_TOOL_REPOSITORY = "Ekey/REE.PAK.Tool.git"
 EKEY_REE_PAK_TOOL_REF = "main"
-MERGED_TOP_LEVEL_KEYS = ("version", "description")
+MERGED_TOP_LEVEL_KEYS = ("version", "description", "languages")
 
 
 class ProfileUpdateError(ValueError):
@@ -294,7 +295,7 @@ def save_profile_toml(path: Path, data: Mapping[str, Any]) -> None:
 
 
 def profile_data_to_toml(data: Mapping[str, Any]) -> str:
-    return build_config_text(profile_data_to_suffix_counts(data))
+    return build_config_text(profile_data_to_suffix_counts(data), languages=_profile_languages(data))
 
 
 def profile_data_to_suffix_counts(data: Mapping[str, Any]) -> dict[str, Counter[int]]:
@@ -311,6 +312,13 @@ def profile_data_to_suffix_counts(data: Mapping[str, Any]) -> dict[str, Counter[
         if versions:
             suffix_counts[normalized_extension] = Counter({version: 1 for version in versions})
     return suffix_counts
+
+
+def _profile_languages(data: Mapping[str, Any]) -> list[str]:
+    try:
+        return profile_languages_from_data(dict(data), source="file_suffix_profiles.json")
+    except ValueError as exc:
+        raise ProfileUpdateError(str(exc)) from exc
 
 
 def _profile_versions(profile: Mapping[str, Any]) -> list[int]:
