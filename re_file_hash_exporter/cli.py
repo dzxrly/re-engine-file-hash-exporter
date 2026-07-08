@@ -22,7 +22,6 @@ from .core.models import SuffixDiscoveryOptions, SuffixDiscoveryProgress, DmpSca
 from .core.workflow import ExportWorkflow
 
 CANDIDATE_MODES = ("small_range", "adaptive", "custom", "auto_detect")
-DEFAULT_PAK_GLOB = "*.[pP][aA][kK]"
 SELECT_ALL_MISSING = "all_missing"
 SELECT_ALL = "all"
 RichProgressFactory = Callable[[], Any]
@@ -415,22 +414,6 @@ def _collect_pak_paths(data: dict[str, Any], base_dir: Path) -> list[Path]:
     paths: list[Path] = []
     for text in _string_list(data.get("pak_paths"), "pak_paths"):
         paths.extend(_resolve_path_pattern(text, base_dir))
-
-    pak_glob = _value_as_str(data.get("pak_glob", DEFAULT_PAK_GLOB), "pak_glob")
-    pak_dirs = _string_list(data.get("pak_dirs"), "pak_dirs")
-    pak_dir = data.get("pak_dir")
-    if pak_dir is not None:
-        pak_dirs.extend(_string_list(pak_dir, "pak_dir"))
-
-    for text in pak_dirs:
-        if _has_glob_pattern(text):
-            paths.extend(_resolve_path_pattern(text, base_dir))
-            continue
-        directory = _resolve_path(text, base_dir)
-        if not directory.is_dir():
-            raise ConfigError(f"PAK directory does not exist: {directory}")
-        paths.extend(sorted(path for path in directory.glob(pak_glob) if path.is_file()))
-
     return _dedupe_existing_files(paths, "PAK")
 
 

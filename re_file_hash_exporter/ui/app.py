@@ -131,8 +131,6 @@ class ExporterApp:
         buttons.pack(side=RIGHT, fill="y")
         self.add_paks_button = Button(buttons, text="Add PAKs", command=self._add_paks)
         self.add_paks_button.pack(fill="x", pady=1)
-        self.add_folder_button = Button(buttons, text="Add Folder", command=self._add_pak_folder)
-        self.add_folder_button.pack(fill="x", pady=1)
         self.remove_paks_button = Button(buttons, text="Remove", command=self._remove_selected_paks)
         self.remove_paks_button.pack(fill="x", pady=1)
         self.clear_paks_button = Button(buttons, text="Clear", command=self._clear_paks)
@@ -338,7 +336,6 @@ class ExporterApp:
             self.output_browse_button,
             self.pak_list,
             self.add_paks_button,
-            self.add_folder_button,
             self.remove_paks_button,
             self.clear_paks_button,
         ):
@@ -396,12 +393,6 @@ class ExporterApp:
             filetypes=[("RE Engine PAK", "*.pak"), ("All files", "*.*")],
         )
         self._append_paks(Path(path) for path in selected)
-
-    def _add_pak_folder(self) -> None:
-        selected = filedialog.askdirectory(title="Select folder containing PAK files")
-        if not selected:
-            return
-        self._append_paks(sorted(Path(selected).glob("*.pak")))
 
     def _append_paks(self, paths) -> None:
         known = {path.resolve() for path in self.pak_paths}

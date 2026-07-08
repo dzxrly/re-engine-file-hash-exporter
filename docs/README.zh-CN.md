@@ -64,9 +64,7 @@ dmp_path = "dump.DMP"
 output_path = "config.toml"
 run_step2 = true
 
-pak_paths = []
-pak_dirs = ["*.[pP][aA][kK]"]
-pak_glob = "*.[pP][aA][kK]"
+pak_paths = ["*.[pP][aA][kK]"]
 
 [step2]
 selected_extensions = "all_missing"
@@ -98,10 +96,7 @@ gpu_batch_sizes = ""
 | `dmp_path` | 字符串，必填 | Step 1 要扫描的 DMP 文件。相对路径以配置文件所在目录为基准解析。 |
 | `output_path` | 字符串，默认 `config.toml` | Step 1 写出、Step 2 更新的输出配置文件。 |
 | `run_step2` | 布尔值，默认 `true` | 设为 `false` 时只执行 Step 1。可以写在顶层，也可以写在 `[step2]`。 |
-| `pak_paths` | 字符串或字符串数组，默认空 | 精确 PAK 文件或 glob 模式。例如 `"base.pak"`、`"*.pak"`、`["base.pak", "patch_001.pak"]`。 |
-| `pak_dirs` | 字符串或字符串数组，默认空 | 要用 `pak_glob` 扫描的目录，也可以直接写 glob 模式，例如 `"*.[pP][aA][kK]"`。 |
-| `pak_dir` | 字符串或字符串数组，默认空 | `pak_dirs` 的兼容别名。新配置建议使用 `pak_dirs`。 |
-| `pak_glob` | 字符串，默认 `*.[pP][aA][kK]` | 仅用于 `pak_dirs` 中的目录项，用来筛选目录里的 PAK 文件。 |
+| `pak_paths` | 字符串或字符串数组，默认空 | 精确 PAK 文件或 glob 模式。例如 `"base.pak"`、`"*.[pP][aA][kK]"`、`["base.pak", "re_chunk_000.pak.patch_001.pak"]`。 |
 
 `[step2]` 字段：
 

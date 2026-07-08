@@ -64,9 +64,7 @@ dmp_path = "dump.DMP"
 output_path = "config.toml"
 run_step2 = true
 
-pak_paths = []
-pak_dirs = ["*.[pP][aA][kK]"]
-pak_glob = "*.[pP][aA][kK]"
+pak_paths = ["*.[pP][aA][kK]"]
 
 [step2]
 selected_extensions = "all_missing"
@@ -98,10 +96,7 @@ Top-level fields:
 | `dmp_path` | string, required | DMP file to scan in Step 1. Relative paths are resolved from the config file's directory. |
 | `output_path` | string, default `config.toml` | Output config path written by Step 1 and updated by Step 2. |
 | `run_step2` | boolean, default `true` | Set to `false` to only run Step 1. Can be top-level or inside `[step2]`. |
-| `pak_paths` | string or string array, default empty | Exact PAK files or glob patterns. Examples: `"base.pak"`, `"*.pak"`, `["base.pak", "patch_001.pak"]`. |
-| `pak_dirs` | string or string array, default empty | Directories to scan with `pak_glob`, or glob patterns such as `"*.[pP][aA][kK]"`. |
-| `pak_dir` | string or string array, default empty | Compatibility alias for `pak_dirs`. Prefer `pak_dirs` in new configs. |
-| `pak_glob` | string, default `*.[pP][aA][kK]` | File pattern used only for `pak_dirs` entries that are directories. |
+| `pak_paths` | string or string array, default empty | Exact PAK files or glob patterns. Examples: `"base.pak"`, `"*.[pP][aA][kK]"`, `["base.pak", "re_chunk_000.pak.patch_001.pak"]`. |
 
 `[step2]` fields:
 

@@ -67,15 +67,15 @@ class CliConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "dump.DMP").write_bytes(b"fake")
-            pak_dir = root / "paks"
-            pak_dir.mkdir()
-            (pak_dir / "base.pak").write_bytes(b"pak")
+            pak_folder = root / "paks"
+            pak_folder.mkdir()
+            (pak_folder / "base.pak").write_bytes(b"pak")
             config_path = root / "cli_config.toml"
             config_path.write_text(
                 """
 dmp_path = "dump.DMP"
 output_path = "out/config.toml"
-pak_dirs = ["paks"]
+pak_paths = ["paks/base.pak"]
 
 [step2]
 selected_extensions = ["tex", ".rcol"]
@@ -101,7 +101,7 @@ gpu_prefetch_batches_per_device = 4
             self.assertEqual(config.base_dir, root.resolve())
             self.assertEqual(config.dmp_path, (root / "dump.DMP").resolve())
             self.assertEqual(config.output_path, (root / "out" / "config.toml").resolve())
-            self.assertEqual(config.pak_paths, [(pak_dir / "base.pak").resolve()])
+            self.assertEqual(config.pak_paths, [(pak_folder / "base.pak").resolve()])
             self.assertEqual(config.step2.selected_extensions, ["tex", "rcol"])
             self.assertEqual(config.step2.mode, "custom")
             self.assertEqual(config.step2.custom_versions, "7")
@@ -149,17 +149,17 @@ gpu_prefetch_batches_per_device = 4
             with self.assertRaisesRegex(ConfigError, "not a directory"):
                 load_cli_config(root)
 
-    def test_default_pak_dir_glob_finds_uppercase_pak_extensions(self) -> None:
+    def test_pak_paths_glob_finds_uppercase_pak_extensions(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "dump.DMP").write_bytes(b"fake")
-            pak_dir = root / "paks"
-            pak_dir.mkdir()
-            upper_pak = pak_dir / "BASE.PAK"
+            pak_folder = root / "paks"
+            pak_folder.mkdir()
+            upper_pak = pak_folder / "BASE.PAK"
             upper_pak.write_bytes(b"pak")
             config_path = root / "cli_config.toml"
             config_path.write_text(
-                'dmp_path = "dump.DMP"\npak_dirs = ["paks"]\n',
+                'dmp_path = "dump.DMP"\npak_paths = ["paks/*.[pP][aA][kK]"]\n',
                 encoding="utf-8",
             )
 
@@ -167,27 +167,41 @@ gpu_prefetch_batches_per_device = 4
 
             self.assertEqual(config.pak_paths, [upper_pak.resolve()])
 
-    def test_pak_dirs_accepts_glob_patterns(self) -> None:
+    def test_pak_paths_accepts_glob_patterns(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "dump.DMP").write_bytes(b"fake")
-            pak_dir = root / "paks"
-            pak_dir.mkdir()
-            base_pak = pak_dir / "base.pak"
-            patch_pak = pak_dir / "base.patch_001.pak"
-            ignored = pak_dir / "notes.txt"
+            pak_folder = root / "paks"
+            pak_folder.mkdir()
+            base_pak = pak_folder / "base.pak"
+            patch_pak = pak_folder / "base.patch_001.pak"
+            ignored = pak_folder / "notes.txt"
             base_pak.write_bytes(b"pak")
             patch_pak.write_bytes(b"pak")
             ignored.write_text("not a pak", encoding="utf-8")
             config_path = root / "cli_config.toml"
             config_path.write_text(
-                'dmp_path = "dump.DMP"\npak_dirs = ["paks/*.pak"]\n',
+                'dmp_path = "dump.DMP"\npak_paths = ["paks/*.pak"]\n',
                 encoding="utf-8",
             )
 
             config = load_cli_config(config_path)
 
             self.assertEqual(config.pak_paths, [base_pak.resolve(), patch_pak.resolve()])
+
+    def test_pak_paths_directory_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "dump.DMP").write_bytes(b"fake")
+            (root / "paks").mkdir()
+            config_path = root / "cli_config.toml"
+            config_path.write_text(
+                'dmp_path = "dump.DMP"\npak_paths = ["paks"]\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "PAK file does not exist"):
+                load_cli_config(config_path)
 
     def test_select_extensions_defaults_to_all_missing(self) -> None:
         scan = DmpScanResult(

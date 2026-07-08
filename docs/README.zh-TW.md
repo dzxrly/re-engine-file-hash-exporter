@@ -64,9 +64,7 @@ dmp_path = "dump.DMP"
 output_path = "config.toml"
 run_step2 = true
 
-pak_paths = []
-pak_dirs = ["*.[pP][aA][kK]"]
-pak_glob = "*.[pP][aA][kK]"
+pak_paths = ["*.[pP][aA][kK]"]
 
 [step2]
 selected_extensions = "all_missing"
@@ -98,10 +96,7 @@ gpu_batch_sizes = ""
 | `dmp_path` | 字串，必填 | Step 1 要掃描的 DMP 檔案。相對路徑以配置檔所在目錄為基準解析。 |
 | `output_path` | 字串，預設 `config.toml` | Step 1 寫出、Step 2 更新的輸出配置檔。 |
 | `run_step2` | 布林值，預設 `true` | 設為 `false` 時只執行 Step 1。可以寫在頂層，也可以寫在 `[step2]`。 |
-| `pak_paths` | 字串或字串陣列，預設空 | 精確 PAK 檔案或 glob 模式。例如 `"base.pak"`、`"*.pak"`、`["base.pak", "patch_001.pak"]`。 |
-| `pak_dirs` | 字串或字串陣列，預設空 | 要用 `pak_glob` 掃描的目錄，也可以直接寫 glob 模式，例如 `"*.[pP][aA][kK]"`。 |
-| `pak_dir` | 字串或字串陣列，預設空 | `pak_dirs` 的相容別名。新配置建議使用 `pak_dirs`。 |
-| `pak_glob` | 字串，預設 `*.[pP][aA][kK]` | 僅用於 `pak_dirs` 中的目錄項，用來篩選目錄裡的 PAK 檔案。 |
+| `pak_paths` | 字串或字串陣列，預設空 | 精確 PAK 檔案或 glob 模式。例如 `"base.pak"`、`"*.[pP][aA][kK]"`、`["base.pak", "re_chunk_000.pak.patch_001.pak"]`。 |
 
 `[step2]` 欄位：
 
