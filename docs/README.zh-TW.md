@@ -16,6 +16,7 @@
 - 第二步可選顯示已經存在後綴的副檔名，用於繼續搜尋可能新增的版本後綴。
 - 後綴探索只讀取 PAK 中繼資料 hash，不解包 PAK 內容。
 - 支援批次加入多個 PAK 檔案。
+- 只選擇 patch PAK 時，也會按增量模式搜尋，並用 `file_suffix_profiles.json` 作為初始基準。
 - 當 PAK 檔案未變更時，重複執行 Step 2 會重用已讀取的 PAK 中繼資料快取。
 - CPU 模式使用多行程平行匹配。
 - CPU 搜尋會依 PAK 群組重用 worker，並重用預先計算的 UTF-16 hash 前綴狀態。
@@ -198,6 +199,8 @@ natives/STM/<raw_path>.<version>.STM
 CPU 匹配會預先計算 `natives/STM/<raw_path>.` 這類長路徑前綴的 hash 狀態，再追加預編碼的版本號、平台和語言尾綴片段，避免每個候選都重新編碼和重新 hash 完整路徑。
 
 同一個 PAK group 內搜尋多個副檔名時，CPU worker 會重用。PAK entry hash 會依路徑、檔案大小和修改時間快取在 workflow 中，因此 PAK 未變更時重複執行 Step 2 可以跳過中繼資料讀取。
+
+如果某個 PAK group 以 patch 檔案開始，且沒有載入對應 base PAK，Step 2 仍會使用增量模式。初始下界來自所選副檔名在 `file_suffix_profiles.json` 中的基準版本，後續同組 patch 會繼續從前面 patch 已發現的版本之後搜尋。
 
 ## GPU Batch Size
 

@@ -130,6 +130,23 @@ def describe_auto_profile(extension: str, profiles: dict[str, dict[str, Any]]) -
     return "numeric priority range preset"
 
 
+def profile_baseline_max_version(extension: str, profiles: dict[str, dict[str, Any]]) -> int | None:
+    profile = profiles.get(_normalize_extension(extension))
+    if not profile:
+        return None
+
+    if _profile_suffix_type(profile) == "date_code":
+        return _date_code_profile_baseline_max(profile)
+
+    try:
+        priority = _priority_versions(profile)
+    except (TypeError, ValueError):
+        return None
+    if not priority:
+        return None
+    return max(priority)
+
+
 def _normalize_extension(extension: str) -> str:
     return extension.lower().lstrip(".")
 
@@ -184,6 +201,26 @@ def _date_code_version_plan(profile: dict[str, Any], options: SuffixDiscoveryOpt
         priority_tails=_priority_tails(profile),
         description="date_code priority range preset",
     )
+
+
+def _date_code_profile_baseline_max(profile: dict[str, Any]) -> int | None:
+    if str(profile.get("date_format", "YYMMDD")).upper() != "YYMMDD":
+        return None
+
+    dates = _priority_dates(profile)
+    if not dates:
+        return None
+
+    try:
+        tail_width = int(profile.get("tail_width", 3))
+    except (TypeError, ValueError):
+        return None
+    if tail_width <= 0:
+        return None
+
+    multiplier = 10**tail_width
+    latest_date = max(dates)
+    return int(latest_date.strftime("%y%m%d")) * multiplier + multiplier - 1
 
 
 def _date_code_bounds(profile: dict[str, Any], options: SuffixDiscoveryOptions) -> tuple[list[date], date, date]:

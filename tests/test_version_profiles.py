@@ -8,6 +8,7 @@ from re_file_hash_exporter.core.models import SuffixDiscoveryOptions
 from re_file_hash_exporter.core.versions.profiles import (
     build_auto_detect_version_plan,
     is_today_date_end,
+    profile_baseline_max_version,
 )
 
 
@@ -80,6 +81,23 @@ class DateCodeTodayTests(unittest.TestCase):
     def test_today_date_end_token_is_case_insensitive(self) -> None:
         self.assertTrue(is_today_date_end(" Today "))
         self.assertFalse(is_today_date_end("7"))
+
+    def test_profile_baseline_max_version_uses_numeric_priority_versions(self) -> None:
+        profiles = {"tex": {"suffix_type": "numeric", "priority_versions": [2, 5, 3]}}
+
+        self.assertEqual(profile_baseline_max_version("tex", profiles), 5)
+
+    def test_profile_baseline_max_version_uses_date_code_profile_high(self) -> None:
+        profiles = {
+            "mesh": {
+                "suffix_type": "date_code",
+                "date_format": "YYMMDD",
+                "tail_width": 2,
+                "priority_dates": ["2024-01-10", "2024-01-12"],
+            }
+        }
+
+        self.assertEqual(profile_baseline_max_version(".mesh", profiles), 24011299)
 
 
 if __name__ == "__main__":

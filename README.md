@@ -16,6 +16,7 @@ It scans resource paths from a selected `.DMP` file, exports known versioned suf
 - Optionally show already versioned extensions in Step 2 so they can be searched for additional suffix versions.
 - Match candidates against PAK metadata hashes without unpacking PAK content.
 - Support multiple PAK files.
+- Treat patch-only PAK selections as incremental scans seeded from `file_suffix_profiles.json`.
 - Cache PAK metadata between repeated Step 2 runs when the selected PAK files do not change.
 - Use CPU multiprocessing for suffix discovery matching.
 - Reuse CPU worker pools per PAK group and reuse precomputed UTF-16 hash prefix states.
@@ -198,6 +199,8 @@ When `streaming_search` is omitted, Step 2 defaults to path-level streaming evid
 CPU matching precomputes the hash state for long path prefixes such as `natives/STM/<raw_path>.`, then appends pre-encoded version, platform, and language suffix fragments. This avoids re-encoding and re-hashing the full path for every candidate.
 
 When several extensions are searched against the same PAK group, CPU workers are reused for the whole group. PAK entry hashes are cached on the workflow object using path, size, and modification time, so repeated Step 2 runs with unchanged PAKs skip metadata loading.
+
+If a selected PAK group starts with a patch file and no base PAK was loaded, Step 2 still uses incremental mode. The initial lower bound is seeded from each selected extension's `file_suffix_profiles.json` baseline, then later patches continue from versions discovered in earlier patches from the same group.
 
 ## GPU Batch Size
 

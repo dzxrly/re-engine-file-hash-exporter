@@ -16,6 +16,7 @@
 - 第二步可选显示已经存在后缀的扩展名，用于继续搜索可能新增的版本后缀。
 - 后缀发现只读取 PAK 元数据 hash，不解包 PAK 内容。
 - 支持批量添加多个 PAK 文件。
+- 当只选择 patch PAK 时，也会按增量模式搜索，并用 `file_suffix_profiles.json` 作为初始基准。
 - 当 PAK 文件未变化时，重复执行 Step 2 会复用已读取的 PAK 元数据缓存。
 - CPU 模式使用多进程并行匹配。
 - CPU 搜索会按 PAK 组复用 worker，并复用预计算的 UTF-16 hash 前缀状态。
@@ -198,6 +199,8 @@ natives/STM/<raw_path>.<version>.STM
 CPU 匹配会预计算 `natives/STM/<raw_path>.` 这类长路径前缀的 hash 状态，再追加预编码的版本号、平台和语言尾缀片段，避免每个候选都重新编码和重新 hash 完整路径。
 
 同一个 PAK group 内搜索多个扩展名时，CPU worker 会复用。PAK entry hash 会按路径、文件大小和修改时间缓存在 workflow 中，因此 PAK 未变化时重复执行 Step 2 可以跳过元数据读取。
+
+如果某个 PAK group 以 patch 文件开始，且没有加载对应 base PAK，Step 2 仍会使用增量模式。初始下界来自所选扩展名在 `file_suffix_profiles.json` 中的基准版本，后续同组 patch 会继续从前面 patch 已发现的版本之后搜索。
 
 ## GPU Batch Size
 

@@ -16,11 +16,12 @@ from ..search.planning import GroupPlan, parse_custom_versions, plan_group, plan
 from ..search.process_pool import CpuSearchExecutor
 from ..search.progress import SuffixDiscoveryProgressTracker, ProgressCallback
 from ..versions.plan import VersionPlan
-from ..versions.profiles import describe_auto_profile, load_version_profiles
+from ..versions.profiles import describe_auto_profile, load_version_profiles, profile_baseline_max_version
 
 CancelCallback = Callable[[], bool]
 
 VERSION_CHUNK_SIZE = 4096
+PROFILE_BASELINE_LABEL = "file_suffix_profiles.json"
 
 
 def gpu_status_message(requested: bool, requested_devices: list[int] | None = None) -> tuple[bool, str | None, list[int]]:
@@ -89,6 +90,7 @@ def discover_suffixes(
 
     result = SuffixDiscoveryResult(warnings=warnings)
     profiles = load_version_profiles()
+    profile_baseline_versions = _profile_baseline_versions(entries_by_extension, profiles)
     auto_profiles = profiles if options.mode == "auto_detect" else {}
     language_mode = normalize_language_mode(options.language_mode, options.include_languages)
     processes = options.processes if options.processes and options.processes > 0 else os.cpu_count() or 1
@@ -105,8 +107,18 @@ def discover_suffixes(
             tracker.emit(force=True)
             return result
 
-        group_mode, incremental_group = _group_scan_mode(group, baseline_groups)
-        _report_group_start(group, group_index, len(pak_groups), group_mode, progress)
+        group_mode, incremental_group, profile_baseline_group = _group_scan_mode(group, baseline_groups)
+        if profile_baseline_group:
+            _seed_profile_baseline_versions(max_versions_by_group, group.group_key, profile_baseline_versions)
+        _report_group_start(
+            group,
+            group_index,
+            len(pak_groups),
+            group_mode,
+            profile_baseline_group,
+            profile_baseline_versions,
+            progress,
+        )
         group_discovered_versions = discovered_versions_by_group.setdefault(group.group_key, {})
 
         group_plan = plan_group(
@@ -247,12 +259,43 @@ def _load_pak_groups(
     return load_hash_groups_from_paks(pak_paths, workers=workers, progress=progress)
 
 
-def _group_scan_mode(group: PakHashGroup, baseline_groups: set[str]) -> tuple[str, bool]:
+def _group_scan_mode(group: PakHashGroup, baseline_groups: set[str]) -> tuple[str, bool, bool]:
     has_baseline_group = group.group_key in baseline_groups
-    incremental_group = group.is_incremental and has_baseline_group
-    if not group.is_incremental or not has_baseline_group:
+    if group.is_incremental:
+        if not has_baseline_group:
+            baseline_groups.add(group.group_key)
+            return "incremental", True, True
+        return "incremental", True, False
+
+    if not has_baseline_group:
         baseline_groups.add(group.group_key)
-    return ("incremental" if incremental_group else "full"), incremental_group
+    return "full", False, False
+
+
+def _profile_baseline_versions(
+    entries_by_extension: dict[str, list[RawPathEntry]],
+    profiles: dict[str, dict],
+) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for extension in entries_by_extension:
+        baseline = profile_baseline_max_version(extension, profiles)
+        if baseline is not None:
+            out[extension] = baseline
+    return out
+
+
+def _seed_profile_baseline_versions(
+    max_versions_by_group: dict[str, dict[str, int]],
+    group_key: str,
+    profile_baseline_versions: dict[str, int],
+) -> None:
+    if not profile_baseline_versions:
+        return
+    group_versions = max_versions_by_group.setdefault(group_key, {})
+    for extension, version in profile_baseline_versions.items():
+        current = group_versions.get(extension)
+        if current is None or version > current:
+            group_versions[extension] = version
 
 
 def _report_group_start(
@@ -260,15 +303,28 @@ def _report_group_start(
     group_index: int,
     total_groups: int,
     group_mode: str,
+    profile_baseline_group: bool,
+    profile_baseline_versions: dict[str, int],
     progress: ProgressCallback | None,
 ) -> None:
     if not progress:
         return
-    if group.is_incremental and group_mode == "full":
-        progress(
-            f"PAK group [{group_index}/{total_groups}] {group.display_name}: "
-            "no base PAK was loaded before this patch, using full scan as baseline."
-        )
+    if profile_baseline_group:
+        if profile_baseline_versions:
+            baseline_text = ", ".join(
+                f".{extension}>{version}" for extension, version in sorted(profile_baseline_versions.items())
+            )
+            progress(
+                f"PAK group [{group_index}/{total_groups}] {group.display_name}: "
+                f"no base PAK was loaded before this patch, using {PROFILE_BASELINE_LABEL} baseline "
+                f"({baseline_text})."
+            )
+        else:
+            progress(
+                f"PAK group [{group_index}/{total_groups}] {group.display_name}: "
+                f"no base PAK was loaded before this patch, using incremental scan; "
+                f"no {PROFILE_BASELINE_LABEL} baseline was available for selected extensions."
+            )
     progress(
         f"PAK group [{group_index}/{total_groups}] {group.display_name}: "
         f"{group_mode} scan over {len(group.hashes)} hashes."
