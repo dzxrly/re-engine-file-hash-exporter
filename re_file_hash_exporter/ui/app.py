@@ -29,7 +29,16 @@ from tkinter import (
 )
 from tkinter import ttk
 
-from ..core.constants import IGNORED_RESOURCE_EXTENSIONS, LANGUAGE_MODE_LOCALIZED, LANGUAGE_MODE_OFF, LANGUAGE_MODES
+from ..core.constants import (
+    CANDIDATE_MODE_AUTO_DETECT,
+    CANDIDATE_MODE_PROFILE_THEN_RANGE,
+    CANDIDATE_MODE_SMALL_RANGE,
+    CANDIDATE_MODES,
+    IGNORED_RESOURCE_EXTENSIONS,
+    LANGUAGE_MODE_LOCALIZED,
+    LANGUAGE_MODE_OFF,
+    LANGUAGE_MODES,
+)
 from ..core.models import SuffixDiscoveryOptions, SuffixDiscoveryProgress, DmpScanResult
 from ..core.versions.profiles import (
     DATE_END_TODAY,
@@ -54,7 +63,7 @@ class ExporterApp:
         self.dmp_path = StringVar()
         self.output_path = StringVar(value=str(Path.cwd() / "config.toml"))
         self.processes = StringVar(value="0")
-        self.mode = StringVar(value="small_range")
+        self.mode = StringVar(value=CANDIDATE_MODE_SMALL_RANGE)
         self.min_version = StringVar(value="0")
         self.max_version = StringVar(value="4096")
         self.custom_versions = StringVar(value="")
@@ -180,7 +189,7 @@ class ExporterApp:
         self.mode_combo = ttk.Combobox(
             right,
             textvariable=self.mode,
-            values=["small_range", "adaptive", "custom", "auto_detect"],
+            values=list(CANDIDATE_MODES),
             state="readonly",
             width=18,
         )
@@ -308,7 +317,7 @@ class ExporterApp:
         self._toggle_date_options()
 
     def _toggle_date_options(self) -> None:
-        if self.mode.get() == "auto_detect":
+        if self.mode.get() in {CANDIDATE_MODE_AUTO_DETECT, CANDIDATE_MODE_PROFILE_THEN_RANGE}:
             self.date_options.pack(fill="x", pady=(2, 0), before=self.processes_entry.master)
         else:
             self.date_options.pack_forget()
@@ -552,7 +561,7 @@ class ExporterApp:
         if not selected:
             messagebox.showerror("Missing extensions", "Select one or more extensions.")
             return
-        if not self._validate_auto_detect_date_options(selected):
+        if not self._validate_profile_date_options(selected):
             return
 
         output = Path(self.output_path.get().strip())
@@ -580,11 +589,16 @@ class ExporterApp:
                 messagebox.showerror("Invalid GPU options", "GPU workers/device must be a positive integer.")
                 return
 
+        candidate_mode = self.mode.get()
         options = SuffixDiscoveryOptions(
             selected_extensions=selected,
-            min_version=int(self.min_version.get() or 0),
+            min_version=(
+                0
+                if candidate_mode == CANDIDATE_MODE_PROFILE_THEN_RANGE
+                else int(self.min_version.get() or 0)
+            ),
             max_version=int(self.max_version.get() or 4096),
-            mode=self.mode.get(),
+            mode=candidate_mode,
             custom_versions=self.custom_versions.get(),
             neighbor_radius=int(self.neighbor_radius.get() or 32),
             date_start=self.date_start.get().strip(),
@@ -654,8 +668,9 @@ class ExporterApp:
             sizes[device] = size
         return sizes
 
-    def _validate_auto_detect_date_options(self, selected: list[str]) -> bool:
-        if self.mode.get() != "auto_detect":
+    def _validate_profile_date_options(self, selected: list[str]) -> bool:
+        candidate_mode = self.mode.get()
+        if candidate_mode not in {CANDIDATE_MODE_AUTO_DETECT, CANDIDATE_MODE_PROFILE_THEN_RANGE}:
             return True
         try:
             needs_dates = any_extension_uses_date_profile(selected)
@@ -665,10 +680,10 @@ class ExporterApp:
         if not needs_dates:
             return True
 
-        for label, value, allow_today in (
-            ("Date -days", self.date_start.get(), False),
-            ("Date +days", self.date_end.get(), True),
-        ):
+        date_fields = [("Date +days", self.date_end.get(), True)]
+        if candidate_mode == CANDIDATE_MODE_AUTO_DETECT:
+            date_fields.insert(0, ("Date -days", self.date_start.get(), False))
+        for label, value, allow_today in date_fields:
             if allow_today and is_today_date_end(value):
                 continue
             try:

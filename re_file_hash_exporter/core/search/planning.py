@@ -4,10 +4,19 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Callable
 
+from ..constants import (
+    CANDIDATE_MODE_AUTO_DETECT,
+    CANDIDATE_MODE_CUSTOM,
+    CANDIDATE_MODE_PROFILE_THEN_RANGE,
+)
 from ..models import SuffixDiscoveryOptions, SuffixCounts
 from ..pak.reader import PakHashGroup
 from ..versions.plan import VersionPlan, discrete_version_plan, numeric_range_plan
-from ..versions.profiles import build_auto_detect_version_plan, load_version_profiles
+from ..versions.profiles import (
+    build_auto_detect_version_plan,
+    build_profile_then_range_version_plan,
+    load_version_profiles,
+)
 from .candidate_policy import candidate_count_for_entries
 from .path_catalog import RawPathEntry
 from .progress import SuffixDiscoveryProgressTracker, ProgressCallback
@@ -54,12 +63,16 @@ def plan_versions_for_extension(
     cancel_requested: CancelCallback | None = None,
 ) -> VersionPlan:
     _raise_if_cancelled(cancel_requested)
-    if options.mode == "custom":
+    if options.mode == CANDIDATE_MODE_CUSTOM:
         return discrete_version_plan(parse_custom_versions(options.custom_versions, cancel_requested), "custom versions")
 
-    if options.mode == "auto_detect":
+    if options.mode == CANDIDATE_MODE_AUTO_DETECT:
         profiles = auto_profiles if auto_profiles is not None else load_version_profiles()
         return build_auto_detect_version_plan(extension, known_suffixes, options, profiles)
+
+    if options.mode == CANDIDATE_MODE_PROFILE_THEN_RANGE:
+        profiles = auto_profiles if auto_profiles is not None else load_version_profiles()
+        return build_profile_then_range_version_plan(extension, options, profiles)
 
     if options.mode == "adaptive":
         values: set[int] = set()

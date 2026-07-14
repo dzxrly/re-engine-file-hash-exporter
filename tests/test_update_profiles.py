@@ -17,6 +17,44 @@ import update
 
 
 class ProfileUpdateScriptTests(unittest.TestCase):
+    def test_ignored_json_and_exe_profiles_are_removed_and_cannot_be_readded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = Path(tmp) / "profiles.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "extensions": {
+                            ".JSON": {"suffix_type": "numeric", "priority_versions": [1]},
+                            "exe": {"suffix_type": "numeric", "priority_versions": [2]},
+                            "tex": {"suffix_type": "numeric", "priority_versions": [3]},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            data = update.load_profile_json(profile_path)
+            touched = update.merge_profile_data(
+                data,
+                {
+                    "extensions": {
+                        "json": {"suffix_type": "numeric", "priority_versions": [4]},
+                        ".EXE": {"suffix_type": "numeric", "priority_versions": [5]},
+                    }
+                },
+            )
+            updated, new, _skipped = update.merge_ree_versions(
+                data,
+                {"json": {6}, "exe": {7}, "rcol": {8}},
+            )
+
+        self.assertEqual(set(data["extensions"]), {"tex", "rcol"})
+        self.assertEqual(touched, [])
+        self.assertEqual(updated, {"rcol"})
+        self.assertEqual(new, {"rcol"})
+        self.assertNotIn("json", update.profile_data_to_suffix_counts(data))
+        self.assertNotIn("exe", update.profile_data_to_suffix_counts(data))
+
     def test_exported_toml_uses_suffix_map_config_shape(self) -> None:
         data = {
             "version": 1,

@@ -7,7 +7,14 @@ from typing import Any
 
 from ..constants import IGNORED_RESOURCE_EXTENSIONS, LANGUAGE_SEARCH_SUFFIXES
 from ..models import SuffixDiscoveryOptions, SuffixCounts
-from .plan import VersionPlan, date_code_plan, discrete_version_plan, empty_version_plan, numeric_range_plan
+from .plan import (
+    VersionPlan,
+    concatenated_version_plan,
+    date_code_plan,
+    discrete_version_plan,
+    empty_version_plan,
+    numeric_range_plan,
+)
 
 PROFILE_FILE_NAME = "file_suffix_profiles.json"
 MIN_DATE_CODE_DATE = date(2000, 1, 1)
@@ -115,6 +122,36 @@ def build_auto_detect_version_plan(
     return _range_version_plan(options, _priority_versions(profile), description)
 
 
+def build_profile_then_range_version_plan(
+    extension: str,
+    options: SuffixDiscoveryOptions,
+    profiles: dict[str, dict[str, Any]],
+) -> VersionPlan:
+    normalized = _normalize_extension(extension)
+    profile = profiles.get(normalized)
+    if _profile_suffix_type(profile) == "date_code":
+        if profile is None:
+            return empty_version_plan("missing date_code profile")
+        return _date_code_profile_then_range_plan(profile, options)
+
+    priority = [value for value in _priority_versions(profile) if value >= 0]
+    if not priority:
+        end = max(0, int(options.max_version))
+        return numeric_range_plan(0, end, description="numeric 0..Max fallback")
+
+    latest = max(priority)
+    known_plan = discrete_version_plan(priority, "numeric profile known versions")
+    tail_plan = (
+        numeric_range_plan(latest + 1, int(options.max_version), description="numeric range after profile latest")
+        if int(options.max_version) > latest
+        else empty_version_plan("numeric range after profile latest")
+    )
+    return concatenated_version_plan(
+        (known_plan, tail_plan),
+        "numeric profile known versions, then new range",
+    )
+
+
 def describe_auto_profile(extension: str, profiles: dict[str, dict[str, Any]]) -> str:
     normalized = _normalize_extension(extension)
     profile = profiles.get(normalized)
@@ -128,6 +165,16 @@ def describe_auto_profile(extension: str, profiles: dict[str, dict[str, Any]]) -
     if suffix_type == "adaptive":
         return "adaptive preset"
     return "numeric priority range preset"
+
+
+def describe_profile_then_range(extension: str, profiles: dict[str, dict[str, Any]]) -> str:
+    normalized = _normalize_extension(extension)
+    profile = profiles.get(normalized)
+    if profile is not None and _profile_suffix_type(profile) == "date_code":
+        return "date_code known combinations, then valid date continuation"
+    if profile is None or not _priority_versions(profile):
+        return "no numeric preset, 0..Max fallback"
+    return "numeric known versions, then range after the profile latest"
 
 
 def profile_baseline_max_version(extension: str, profiles: dict[str, dict[str, Any]]) -> int | None:
@@ -200,6 +247,49 @@ def _date_code_version_plan(profile: dict[str, Any], options: SuffixDiscoveryOpt
         priority_dates=base_dates,
         priority_tails=_priority_tails(profile),
         description="date_code priority range preset",
+    )
+
+
+def _date_code_profile_then_range_plan(
+    profile: dict[str, Any],
+    options: SuffixDiscoveryOptions,
+) -> VersionPlan:
+    if str(profile.get("date_format", "YYMMDD")).upper() != "YYMMDD":
+        raise ValueError("Only YYMMDD date_code profiles are currently supported.")
+
+    try:
+        tail_width = int(profile.get("tail_width", 3))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("date_code profile tail_width must be a positive integer.") from exc
+    if tail_width <= 0:
+        raise ValueError("date_code profile tail_width must be a positive integer.")
+
+    priority_dates = _priority_dates(profile)
+    tail_limit = 10**tail_width
+    priority_tails = [tail for tail in _priority_tails(profile) if 0 <= tail < tail_limit]
+    if not priority_dates or not priority_tails:
+        return empty_version_plan("date_code profile has no known date/tail combinations")
+
+    known_values = [
+        int(current.strftime("%y%m%d")) * tail_limit + tail
+        for current in priority_dates
+        for tail in priority_tails
+    ]
+    latest_known = max(known_values)
+    latest_date = max(priority_dates)
+    end_date = _date_code_end_date(latest_date, options.date_end)
+    continuation = date_code_plan(
+        start_date=latest_date,
+        end_date=max(latest_date, end_date),
+        tail_width=tail_width,
+        description="valid date_code range after profile latest",
+    ).with_minimum(latest_known + 1)
+    return concatenated_version_plan(
+        (
+            discrete_version_plan(known_values, "date_code profile known combinations"),
+            continuation,
+        ),
+        "date_code profile known combinations, then valid date continuation",
     )
 
 

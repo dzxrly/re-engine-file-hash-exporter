@@ -17,11 +17,18 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     except ModuleNotFoundError:  # pragma: no cover
         tomllib = None  # type: ignore[assignment]
 
-from .core.constants import IGNORED_RESOURCE_EXTENSIONS, LANGUAGE_MODE_LOCALIZED, LANGUAGE_MODES
+from .core.constants import (
+    CANDIDATE_MODE_AUTO_DETECT,
+    CANDIDATE_MODE_PROFILE_THEN_RANGE,
+    CANDIDATE_MODE_SMALL_RANGE,
+    CANDIDATE_MODES,
+    IGNORED_RESOURCE_EXTENSIONS,
+    LANGUAGE_MODE_LOCALIZED,
+    LANGUAGE_MODES,
+)
 from .core.models import SuffixDiscoveryOptions, SuffixDiscoveryProgress, DmpScanResult
 from .core.workflow import ExportWorkflow
 
-CANDIDATE_MODES = ("small_range", "adaptive", "custom", "auto_detect")
 SELECT_ALL_MISSING = "all_missing"
 SELECT_ALL = "all"
 RichProgressFactory = Callable[[], Any]
@@ -196,11 +203,16 @@ def load_cli_config(config_path: str | Path) -> CliConfig:
     if run_step2 and not pak_paths:
         raise ConfigError("run_step2 is true, but no PAK files were configured or found.")
 
+    candidate_mode = _get_choice(data, step2_data, "mode", CANDIDATE_MODE_SMALL_RANGE, CANDIDATE_MODES)
     settings = CliStep2Settings(
         selected_extensions=_get_selected_extensions(data, step2_data),
-        min_version=_get_int(data, step2_data, "min_version", 0),
+        min_version=(
+            0
+            if candidate_mode == CANDIDATE_MODE_PROFILE_THEN_RANGE
+            else _get_int(data, step2_data, "min_version", 0)
+        ),
         max_version=_get_int(data, step2_data, "max_version", 4096),
-        mode=_get_choice(data, step2_data, "mode", "small_range", CANDIDATE_MODES),
+        mode=candidate_mode,
         custom_versions=_get_str(data, step2_data, "custom_versions", ""),
         neighbor_radius=_get_int(data, step2_data, "neighbor_radius", 32),
         date_start=_get_str(data, step2_data, "date_start", ""),
@@ -503,9 +515,14 @@ def _split_csv(text: str) -> list[str]:
 
 
 def _validate_step2_settings(settings: CliStep2Settings) -> None:
-    if settings.min_version < 0:
+    if settings.mode != CANDIDATE_MODE_PROFILE_THEN_RANGE and settings.min_version < 0:
         raise ConfigError("min_version must be >= 0.")
-    if settings.max_version < settings.min_version and settings.mode != "auto_detect":
+    if settings.mode == CANDIDATE_MODE_PROFILE_THEN_RANGE and settings.max_version < 0:
+        raise ConfigError("max_version must be >= 0.")
+    if settings.max_version < settings.min_version and settings.mode not in {
+        CANDIDATE_MODE_AUTO_DETECT,
+        CANDIDATE_MODE_PROFILE_THEN_RANGE,
+    }:
         raise ConfigError("max_version must be >= min_version.")
     if settings.neighbor_radius < 0:
         raise ConfigError("neighbor_radius must be >= 0.")

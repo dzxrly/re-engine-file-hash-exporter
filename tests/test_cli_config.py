@@ -208,11 +208,37 @@ gpu_prefetch_batches_per_device = 4
             unversioned_paths={
                 "tex": Counter({"natives/STM/foo/a.tex": 1}),
                 "exe": Counter({"ignored.exe": 1}),
+                "json": Counter({"ignored.json": 1}),
             },
             versioned_paths={"rcol": Counter({"natives/STM/foo/a.rcol": 1})},
         )
 
         self.assertEqual(select_extensions_from_scan(scan, None), ["tex"])
+
+    def test_profile_then_range_ignores_cli_min_version_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "dump.DMP").write_bytes(b"fake")
+            (root / "base.pak").write_bytes(b"pak")
+            config_path = root / "cli_config.toml"
+            config_path.write_text(
+                """
+dmp_path = "dump.DMP"
+pak_paths = ["base.pak"]
+
+[step2]
+mode = "profile_then_range"
+min_version = "not-an-integer"
+max_version = 45
+""".strip(),
+                encoding="utf-8",
+            )
+
+            config = load_cli_config(config_path)
+
+        self.assertEqual(config.step2.mode, "profile_then_range")
+        self.assertEqual(config.step2.min_version, 0)
+        self.assertEqual(config.step2.max_version, 45)
 
     def test_select_all_can_include_versioned_extensions(self) -> None:
         scan = DmpScanResult(

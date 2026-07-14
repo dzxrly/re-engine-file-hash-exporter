@@ -12,7 +12,7 @@
 - 第一步匯出 DMP 中已經帶有數字後綴的 `suffix_map`。
 - 將 DMP 中只有 `name.ext`、沒有 `.version` 的 raw path 按副檔名彙總並提示。
 - 第二步允許手動選擇副檔名，並在候選範圍內探索版本號後綴。
-- 提供 `auto_detect` 候選規劃模式，可從根目錄 `file_suffix_profiles.json` 讀取可編輯預設。
+- 提供 `auto_detect` 和 `profile_then_range` 候選規劃模式，可從根目錄 `file_suffix_profiles.json` 讀取可編輯預設。
 - 第二步可選顯示已經存在後綴的副檔名，用於繼續搜尋可能新增的版本後綴。
 - 後綴探索只讀取 PAK 中繼資料 hash，不解包 PAK 內容。
 - 支援批次加入多個 PAK 檔案。
@@ -103,13 +103,13 @@ gpu_batch_sizes = ""
 | 欄位 | 類型和預設值 | 說明 |
 | --- | --- | --- |
 | `selected_extensions` | 字串、字串陣列或省略 | 要搜尋的副檔名。省略或寫 `"all_missing"` 表示搜尋 Step 1 中有未帶版本路徑證據的副檔名；`"missing"` 和 `"auto"` 是別名。寫 `"all"` 時會包含所有擁有 Step 1 路徑證據的副檔名。支援 CSV 字串，例如 `"tex,rcol"`，也支援陣列，例如 `["tex", "rcol"]`。副檔名前面的點可寫可不寫。 |
-| `mode` | 字串，預設 `"small_range"` | 候選版本規劃模式。可選值：`"small_range"`、`"adaptive"`、`"custom"`、`"auto_detect"`。 |
-| `min_version` | 整數，預設 `0` | 在 `small_range` 中表示起始版本號；在 `auto_detect` 的 numeric profile 中表示從預設最小值向下擴展多少。必須非負。 |
-| `max_version` | 整數，預設 `4096` | 在 `small_range` 中表示結束版本號；在 `auto_detect` 的 numeric profile 中表示從預設最大值向上擴展多少。除 `auto_detect` 外必須大於等於 `min_version`。 |
+| `mode` | 字串，預設 `"small_range"` | 候選版本規劃模式。可選值：`"small_range"`、`"adaptive"`、`"custom"`、`"auto_detect"`、`"profile_then_range"`。 |
+| `min_version` | 整數，預設 `0` | 在 `small_range` 中表示起始版本號；在 `auto_detect` 的 numeric profile 中表示從預設最小值向下擴展多少。`profile_then_range` 會忽略此欄位。欄位生效時必須非負。 |
+| `max_version` | 整數，預設 `4096` | 在 `small_range` 中表示結束版本號；在 `auto_detect` 的 numeric profile 中表示從預設最大值向上擴展多少；在 `profile_then_range` 的 numeric profile 中表示最新預設版本之後新增區間的結束值。 |
 | `custom_versions` | 字串，預設空 | 僅用於 `custom` 模式。支援逗號、換行和範圍，例如 `"12,18,30-40"`。 |
 | `neighbor_radius` | 整數，預設 `32` | 僅用於 `adaptive` 模式，對已知版本號左右各擴展這個半徑。 |
-| `date_start` | 字串，預設空 | 用於 `auto_detect` 的 `date_code` profile，並且 profile 裡存在 `priority_dates` 時生效。含義是 `Date -days`，即向最早優先日期之前擴展多少天。 |
-| `date_end` | 字串，預設空 | 用於 `auto_detect` 的 `date_code` profile，並且 profile 裡存在 `priority_dates` 時生效。含義是 `Date +days`，即向最晚優先日期之後擴展多少天。設定為 `"today"` 時，會擴展到本機目前日期；如果目前日期早於預設裡的最晚優先日期，則不會縮小預設範圍。 |
+| `date_start` | 字串，預設空 | 用於 `auto_detect` 的 `date_code` profile，表示向最早優先日期之前擴展多少天。`profile_then_range` 會忽略此欄位。 |
+| `date_end` | 字串，預設空 | 用於 profile 引導的 `date_code` 搜尋，表示向最晚優先日期之後擴展多少天。設定為 `"today"` 時會擴展到本機目前日期且不會縮小預設範圍；在 `profile_then_range` 中它是日期類型自己的上界。 |
 | `processes` | 整數，預設 `0` | CPU worker 數量。`0` 表示使用本機 CPU 核心數。 |
 | `include_platform_suffixes` | 布林值，預設 `true` | 根據路徑證據產生 `.STM`、`.X64` 等平台後綴變體。 |
 | `language_mode` | 字串，預設 `"localized"` | 語言後綴模式。可選值：`"localized"`、`"off"`、`"all"`。 |
@@ -166,8 +166,9 @@ natives/STM/<raw_path>.<version>.STM
 - `adaptive`：根據 Step 1 已經從 DMP 中找到的同副檔名已知版本號，按 `Neighbor radius` 向左右擴展。預設半徑是 `32`，例如已知版本 `100` 會規劃 `68..132`。如果所選副檔名沒有任何已知版本，則退回 `Min version..Max version` 範圍。
 - `custom`：只嘗試 `Custom versions` 中手動填寫的版本號。可以用逗號或換行分隔，也可以寫範圍，例如 `12, 18, 30-40`。程式會去重並排序。這個模式會忽略 `Min version`、`Max version` 和 `Neighbor radius`。
 - `auto_detect`：從專案根目錄的 `file_suffix_profiles.json` 讀取預設，並按所選副檔名分別規劃版本號。`numeric` 類型把 `priority_versions` 當作基準範圍：`Min version` 從預設下界向下擴展，`Max version` 從預設上界向上擴展。例如預設是 `2..38`，`Min version = 10` 且 `Max version = 4096` 時，會搜尋 `0..4134`。`date_code` 類型把 `priority_dates` 當作基準日期範圍；`Date -days` 向前擴展日期下界，`Date +days` 向後擴展日期上界，`Date +days = today` 會使用本機目前日期作為上界，並優先嘗試 `priority_tails`，再嘗試剩餘的 `000..999` 尾號。
+- `profile_then_range`：先搜尋 profile 中已有的候選，再只搜尋最新已知值之後的新增區間。`numeric` 類型先嘗試全部 `priority_versions`，然後搜尋 `max(priority_versions) + 1 .. Max version`，忽略 `Min version`；沒有 numeric 預設時回退到 `0..Max version`。`date_code` 類型先嘗試全部 `priority_dates × priority_tails` 組合，再從最新組合之後按有效日曆後綴搜尋到 `Date +days`（或 `today`），忽略 `Date -days` 和 numeric 的 `Max version`。numeric 與 date-code 副檔名可以混選，因為兩者分別使用自己的上界。
 
-一般建議：同時搜尋多種不同檔案類型時，優先試 `auto_detect`；Step 1 已經找到相關已知版本時可試 `adaptive`；需要掃得更廣時用 `small_range`；已經知道可能版本號時用 `custom`，速度會更可控。
+一般建議：需要複查 profile 已知版本並只繼續搜尋較新值時使用 `profile_then_range`；需要更寬的 profile 引導範圍時使用 `auto_detect`；Step 1 已找到相關版本時可試 `adaptive`；需要完整範圍時用 `small_range`；已知候選時用 `custom`。
 
 ## 語言模式
 
@@ -195,7 +196,7 @@ CPU 匹配會預先計算 `natives/STM/<raw_path>.` 這類長路徑前綴的 has
 
 同一個 PAK group 內搜尋多個副檔名時，CPU worker 會重用。PAK entry hash 會依路徑、檔案大小和修改時間快取在 workflow 中，因此 PAK 未變更時重複執行 Step 2 可以跳過中繼資料讀取。
 
-如果某個 PAK group 以 patch 檔案開始，且沒有載入對應 base PAK，Step 2 仍會使用增量模式。初始下界來自所選副檔名在 `file_suffix_profiles.json` 中的基準版本，後續同組 patch 會繼續從前面 patch 已發現的版本之後搜尋。
+如果某個 PAK group 以 patch 檔案開始，且沒有載入對應 base PAK，Step 2 仍會使用增量模式。通常初始下界來自所選副檔名在 `file_suffix_profiles.json` 中的基準版本，後續同組 patch 會繼續從前面 patch 已發現的版本之後搜尋。`profile_then_range` 會先在第一個 patch-only group 中搜尋 profile 已知候選，之後的 patch 再套用增量下界。
 
 ## GPU Batch Size
 

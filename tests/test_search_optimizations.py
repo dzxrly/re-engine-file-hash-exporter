@@ -339,6 +339,88 @@ class SearchOptimizationTests(unittest.TestCase):
         self.assertTrue(any("file_suffix_profiles.json baseline (.tex>5)" in message for message in text_messages))
         self.assertTrue(any(".tex: incremental lower bound > 5." in message for message in text_messages))
 
+    def test_profile_then_range_searches_known_versions_and_new_tail_but_not_old_gaps(self) -> None:
+        known_version = "natives/STM/foo/a.rcol.2"
+        old_gap = "natives/STM/foo/a.rcol.5"
+        new_tail = "natives/STM/foo/a.rcol.11"
+
+        class Cache:
+            def load_groups(self, pak_paths, workers=0, progress=None):
+                return [
+                    PakHashGroup(
+                        Path("base.pak"),
+                        {hash_mixed(known_version), hash_mixed(old_gap), hash_mixed(new_tail)},
+                        "base.pak",
+                        0,
+                    )
+                ]
+
+        scan = DmpScanResult(unversioned_paths={"rcol": Counter({"natives/STM/foo/a.rcol": 1})})
+        with patch(
+            "re_file_hash_exporter.core.suffix_discovery.engine.load_version_profiles",
+            return_value={"rcol": {"suffix_type": "numeric", "priority_versions": [2, 10]}},
+        ):
+            result = discover_suffixes(
+                scan,
+                [Path("unused.pak")],
+                {},
+                SuffixDiscoveryOptions(
+                    selected_extensions=["rcol"],
+                    mode="profile_then_range",
+                    min_version=9,
+                    max_version=11,
+                    processes=1,
+                    include_platform_suffixes=False,
+                    include_streaming=False,
+                    language_mode="off",
+                ),
+                pak_cache=Cache(),
+            )
+
+        self.assertFalse(result.cancelled)
+        self.assertEqual([match.version for match in result.matches], [2, 11])
+        self.assertNotIn(old_gap, {match.full_path for match in result.matches})
+
+    def test_patch_only_profile_then_range_scans_known_profile_versions_first(self) -> None:
+        known_version = "natives/STM/foo/a.tex.5"
+        new_version = "natives/STM/foo/a.tex.6"
+
+        class Cache:
+            def load_groups(self, pak_paths, workers=0, progress=None):
+                return [
+                    PakHashGroup(
+                        Path("re_chunk_000.pak.patch_001.pak"),
+                        {hash_mixed(known_version), hash_mixed(new_version)},
+                        "re_chunk_000.pak",
+                        0,
+                        patch_index=1,
+                    )
+                ]
+
+        scan = DmpScanResult(unversioned_paths={"tex": Counter({"natives/STM/foo/a.tex": 1})})
+        with patch(
+            "re_file_hash_exporter.core.suffix_discovery.engine.load_version_profiles",
+            return_value={"tex": {"suffix_type": "numeric", "priority_versions": [5]}},
+        ):
+            result = discover_suffixes(
+                scan,
+                [Path("unused.pak")],
+                {},
+                SuffixDiscoveryOptions(
+                    selected_extensions=["tex"],
+                    mode="profile_then_range",
+                    max_version=6,
+                    processes=1,
+                    include_platform_suffixes=False,
+                    include_streaming=False,
+                    language_mode="off",
+                ),
+                pak_cache=Cache(),
+            )
+
+        self.assertFalse(result.cancelled)
+        self.assertEqual([match.version for match in result.matches], [5, 6])
+
     def test_suffix_discovery_rechecks_known_versions_as_family_baseline_evidence(self) -> None:
         known = "natives/STM/foo/a.rcol.27"
         new = "natives/STM/foo/a.rcol.28"

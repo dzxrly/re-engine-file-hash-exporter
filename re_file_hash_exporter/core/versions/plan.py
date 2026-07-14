@@ -214,6 +214,38 @@ def discrete_version_plan(
     )
 
 
+def concatenated_version_plan(
+    plans: Iterable[VersionPlan],
+    description: str = "concatenated version plans",
+) -> VersionPlan:
+    active_plans = tuple(plan for plan in plans if plan.count)
+    if not active_plans:
+        return empty_version_plan(description)
+
+    lows = [plan.low for plan in active_plans if plan.low is not None]
+    highs = [plan.high for plan in active_plans if plan.high is not None]
+
+    def iter_values(cancel_requested: CancelCallback | None = None) -> Iterator[int]:
+        for plan in active_plans:
+            yield from plan.iter_values(cancel_requested)
+
+    def with_minimum(minimum: int) -> VersionPlan:
+        return concatenated_version_plan(
+            (plan.with_minimum(minimum) for plan in active_plans),
+            f"{description}, >= {minimum}",
+        )
+
+    return VersionPlan(
+        description=description,
+        count=sum(plan.count for plan in active_plans),
+        low=min(lows) if lows else None,
+        high=max(highs) if highs else None,
+        _iter_values=iter_values,
+        _with_minimum=with_minimum,
+        _contains=lambda value: any(plan.contains(value) for plan in active_plans),
+    )
+
+
 def date_code_plan(
     start_date: date,
     end_date: date,

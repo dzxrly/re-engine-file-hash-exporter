@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Preset suffix priorities used by Candidate mode auto_detect. Numeric and date profiles define baseline ranges; UI fields expand those ranges.",
+  "description": "Preset suffix priorities used by Candidate modes auto_detect and profile_then_range. Numeric and date profiles define baseline candidates and their mode-specific continuation ranges.",
   "languages": [
     "Ja",
     "En",
@@ -37,8 +37,8 @@
     "Es419"
   ],
   "suffix_types": {
-    "numeric": "Use priority_versions as the baseline version range; UI Min version subtracts from the baseline lower bound and UI Max version adds to the baseline upper bound.",
-    "date_code": "Use priority_dates as the baseline date range; UI date offsets expand the lower and upper date bounds, and priority_tails are tried first."
+    "numeric": "Use priority_versions as the profile candidates. auto_detect expands the baseline range; profile_then_range tries the known values first and continues through UI Max version.",
+    "date_code": "Use priority_dates and priority_tails as profile candidates. auto_detect expands both date bounds; profile_then_range tries known combinations first and continues through UI Date +days."
   },
   "extensions": {
     "mesh": {
@@ -1290,9 +1290,6 @@
       "priority_versions": [
         2
       ]
-    },
-    "json": {
-      "suffix_type": "numeric"
     },
     "lfa": {
       "suffix_type": "numeric",

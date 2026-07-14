@@ -12,7 +12,7 @@ It scans resource paths from a selected `.DMP` file, exports known versioned suf
 - Export the first-step `suffix_map` for paths that already contain numeric suffixes in the DMP.
 - Group and report raw paths such as `name.ext` that do not include `.version`.
 - Let the user select extensions and discover candidate version suffixes from current DMP path evidence.
-- Provide `auto_detect` candidate planning from editable presets in `file_suffix_profiles.json`.
+- Provide `auto_detect` and `profile_then_range` candidate planning from editable presets in `file_suffix_profiles.json`.
 - Optionally show already versioned extensions in Step 2 so they can be searched for additional suffix versions.
 - Match candidates against PAK metadata hashes without unpacking PAK content.
 - Support multiple PAK files.
@@ -103,13 +103,13 @@ Top-level fields:
 | Field | Type and default | Description |
 | --- | --- | --- |
 | `selected_extensions` | string, string array, or omitted | Extensions to search. Omit or use `"all_missing"` to search extensions with unversioned paths from Step 1. `"missing"` and `"auto"` are aliases. Use `"all"` to include every extension with any Step 1 path evidence. CSV strings such as `"tex,rcol"` and arrays such as `["tex", "rcol"]` are accepted. Leading dots are optional. |
-| `mode` | string, default `"small_range"` | Candidate version planning mode. Allowed values: `"small_range"`, `"adaptive"`, `"custom"`, `"auto_detect"`. |
-| `min_version` | integer, default `0` | In `small_range`, the inclusive lower version. In `auto_detect` numeric profiles, how far to expand below the preset minimum. Must be non-negative. |
-| `max_version` | integer, default `4096` | In `small_range`, the inclusive upper version. In `auto_detect` numeric profiles, how far to expand above the preset maximum. Must be at least `min_version` except in `auto_detect`. |
+| `mode` | string, default `"small_range"` | Candidate version planning mode. Allowed values: `"small_range"`, `"adaptive"`, `"custom"`, `"auto_detect"`, `"profile_then_range"`. |
+| `min_version` | integer, default `0` | In `small_range`, the inclusive lower version. In `auto_detect` numeric profiles, how far to expand below the preset minimum. Ignored by `profile_then_range`. Must be non-negative when used. |
+| `max_version` | integer, default `4096` | In `small_range`, the inclusive upper version. In `auto_detect` numeric profiles, how far to expand above the preset maximum. In `profile_then_range` numeric profiles, the inclusive end of the new range after the latest preset version. |
 | `custom_versions` | string, default empty | Used only by `custom`. Supports comma/newline separated values and ranges such as `"12,18,30-40"`. |
 | `neighbor_radius` | integer, default `32` | Used by `adaptive`; searches known versions plus and minus this radius. |
-| `date_start` | string, default empty | For `auto_detect` `date_code` profiles with `priority_dates`, this is `Date -days`, the number of days to expand before the earliest priority date. |
-| `date_end` | string, default empty | For `auto_detect` `date_code` profiles with `priority_dates`, this is `Date +days`, the number of days to expand after the latest priority date. Use `"today"` to expand through the local system date without shrinking the preset priority range. |
+| `date_start` | string, default empty | For `auto_detect` `date_code` profiles with `priority_dates`, this is `Date -days`, the number of days to expand before the earliest priority date. Ignored by `profile_then_range`. |
+| `date_end` | string, default empty | For profile-guided `date_code` searches, this is `Date +days`, the number of days to expand after the latest priority date. Use `"today"` to expand through the local system date without shrinking the preset priority range. In `profile_then_range`, it is the date-specific upper bound. |
 | `processes` | integer, default `0` | CPU worker count. `0` uses the machine CPU count. |
 | `include_platform_suffixes` | boolean, default `true` | Generate platform suffix variants such as `.STM` and `.X64` when path evidence suggests they may be needed. |
 | `language_mode` | string, default `"localized"` | Language suffix mode. Allowed values: `"localized"`, `"off"`, `"all"`. |
@@ -166,8 +166,9 @@ Candidate generation is profile-guided. Step 1 keeps light path evidence for eac
 - `adaptive`: uses known suffix versions found by Step 1 for the same extension, then expands around each known version by `Neighbor radius`. With the default radius `32`, a known version `100` plans `68..132`. If the selected extension has no known version, it falls back to the `Min version..Max version` range.
 - `custom`: tries only the values entered in `Custom versions`. Use commas or new lines to separate values, and use ranges such as `12, 18, 30-40`. The values are deduplicated and sorted. In this mode, `Min version`, `Max version`, and `Neighbor radius` are ignored.
 - `auto_detect`: reads `file_suffix_profiles.json` from the project root and plans versions per selected extension. `numeric` profiles use `priority_versions` as the baseline range: `Min version` subtracts from the preset lower bound, and `Max version` adds to the preset upper bound. For example, a preset `2..38` with `Min version = 10` and `Max version = 4096` searches `0..4134`. `date_code` profiles use `priority_dates` as the baseline date range; `Date -days` expands the lower date bound, `Date +days` expands the upper date bound, `Date +days = today` uses the local system date as the upper bound, and `priority_tails` are tried before the remaining `000..999` tails.
+- `profile_then_range`: first searches the known profile candidates, then searches only the new tail after the latest known value. For `numeric` profiles, all `priority_versions` are tried first, followed by `max(priority_versions) + 1 .. Max version`; `Min version` is ignored. If no numeric preset exists, it falls back to `0..Max version`. For `date_code` profiles, all `priority_dates × priority_tails` combinations are tried first, followed by valid calendar suffixes after the latest known combination through `Date +days` (or `today`); `Date -days` and numeric `Max version` are ignored for those extensions. Numeric and date-code extensions can be searched together because they use their own upper bounds.
 
-As a rule of thumb, start with `auto_detect` when searching several different file types, use `adaptive` when Step 1 has found related known versions, use `small_range` when you need a broader search, and use `custom` when you already know the likely version numbers.
+As a rule of thumb, use `profile_then_range` to recheck known profile versions and continue only into newer values, start with `auto_detect` for broader profile-guided ranges, use `adaptive` when Step 1 has found related known versions, use `small_range` when you need a full range, and use `custom` when you already know the likely version numbers.
 
 ## Language Modes
 
@@ -195,7 +196,7 @@ CPU matching precomputes the hash state for long path prefixes such as `natives/
 
 When several extensions are searched against the same PAK group, CPU workers are reused for the whole group. PAK entry hashes are cached on the workflow object using path, size, and modification time, so repeated Step 2 runs with unchanged PAKs skip metadata loading.
 
-If a selected PAK group starts with a patch file and no base PAK was loaded, Step 2 still uses incremental mode. The initial lower bound is seeded from each selected extension's `file_suffix_profiles.json` baseline, then later patches continue from versions discovered in earlier patches from the same group.
+If a selected PAK group starts with a patch file and no base PAK was loaded, Step 2 still uses incremental mode. Normally the initial lower bound is seeded from each selected extension's `file_suffix_profiles.json` baseline, then later patches continue from versions discovered in earlier patches from the same group. `profile_then_range` deliberately searches the known profile candidates in the first patch-only group before later patches apply the incremental lower bound.
 
 ## GPU Batch Size
 

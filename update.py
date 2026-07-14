@@ -18,6 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
 from re_file_hash_exporter.core.config.builder import build_config_text
+from re_file_hash_exporter.core.constants import IGNORED_RESOURCE_EXTENSIONS
 from re_file_hash_exporter.core.dmp.parser import resource_suffix_from_path
 from re_file_hash_exporter.core.versions.profiles import profile_languages_from_data
 
@@ -140,6 +141,7 @@ def load_profile_json(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ProfileUpdateError(f"{path}: expected a JSON object.")
     _ensure_mapping(data, "extensions", path)
+    _remove_ignored_profile_extensions(data)
     return data
 
 
@@ -156,6 +158,7 @@ def load_profile_toml(path: Path) -> dict[str, Any]:
 def merge_profile_data(target: dict[str, Any], incoming: Mapping[str, Any], source: Path | None = None) -> list[str]:
     label = source or Path("<toml>")
     updated_extensions: list[str] = []
+    _remove_ignored_profile_extensions(target)
 
     for key in MERGED_TOP_LEVEL_KEYS:
         if key in incoming:
@@ -184,6 +187,9 @@ def merge_profile_data(target: dict[str, Any], incoming: Mapping[str, Any], sour
 
     for extension, profile in incoming_extensions.items():
         normalized_extension = _normalize_extension_key(extension, label)
+        if normalized_extension in IGNORED_RESOURCE_EXTENSIONS:
+            target_extensions.pop(normalized_extension, None)
+            continue
         if not isinstance(profile, Mapping):
             raise ProfileUpdateError(f"{label}: extensions.{extension} must be a table.")
         current_profile = target_extensions.setdefault(normalized_extension, {})
@@ -231,6 +237,7 @@ def merge_ree_versions(
     target: dict[str, Any],
     versions_by_extension: Mapping[str, set[int]],
 ) -> tuple[set[str], set[str], int]:
+    _remove_ignored_profile_extensions(target)
     target_extensions = target.setdefault("extensions", {})
     if not isinstance(target_extensions, dict):
         raise ProfileUpdateError("file_suffix_profiles.json: extensions must be an object.")
@@ -243,6 +250,9 @@ def merge_ree_versions(
         if not versions:
             continue
         normalized_extension = _normalize_extension_key(extension, Path("<ree-projects>"))
+        if normalized_extension in IGNORED_RESOURCE_EXTENSIONS:
+            target_extensions.pop(normalized_extension, None)
+            continue
         existing_profile = target_extensions.get(normalized_extension)
         is_new_extension = not isinstance(existing_profile, dict)
         profile = existing_profile if isinstance(existing_profile, dict) else {}
@@ -306,6 +316,8 @@ def profile_data_to_suffix_counts(data: Mapping[str, Any]) -> dict[str, Counter[
 
     for extension, profile in extensions.items():
         normalized_extension = _normalize_extension_key(extension, Path("<profiles>"))
+        if normalized_extension in IGNORED_RESOURCE_EXTENSIONS:
+            continue
         if not isinstance(profile, Mapping):
             continue
         versions = _profile_versions(profile)
@@ -469,6 +481,15 @@ def _normalize_extension_key(extension: Any, source: Path) -> str:
     if not normalized:
         raise ProfileUpdateError(f"{source}: extension names must not be empty.")
     return normalized
+
+
+def _remove_ignored_profile_extensions(data: dict[str, Any]) -> None:
+    extensions = data.get("extensions", {})
+    if not isinstance(extensions, dict):
+        return
+    for extension in list(extensions):
+        if str(extension).strip().lower().lstrip(".") in IGNORED_RESOURCE_EXTENSIONS:
+            extensions.pop(extension, None)
 
 
 def _ensure_mapping(data: Mapping[str, Any], key: str, source: Path) -> None:

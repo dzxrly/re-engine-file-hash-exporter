@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from ..constants import CANDIDATE_MODE_AUTO_DETECT, CANDIDATE_MODE_PROFILE_THEN_RANGE
 from ..gpu.torch_backend import match_extension_with_torch, resolve_cuda_devices
 from ..models import SuffixDiscoveryMatch, SuffixDiscoveryOptions, SuffixDiscoveryResult, DmpScanResult, SuffixCounts
 from ..pak.cache import PakHashCache
@@ -16,7 +17,12 @@ from ..search.planning import GroupPlan, parse_custom_versions, plan_group, plan
 from ..search.process_pool import CpuSearchExecutor
 from ..search.progress import SuffixDiscoveryProgressTracker, ProgressCallback
 from ..versions.plan import VersionPlan
-from ..versions.profiles import describe_auto_profile, load_version_profiles, profile_baseline_max_version
+from ..versions.profiles import (
+    describe_auto_profile,
+    describe_profile_then_range,
+    load_version_profiles,
+    profile_baseline_max_version,
+)
 
 CancelCallback = Callable[[], bool]
 
@@ -91,7 +97,8 @@ def discover_suffixes(
     result = SuffixDiscoveryResult(warnings=warnings)
     profiles = load_version_profiles()
     profile_baseline_versions = _profile_baseline_versions(entries_by_extension, profiles)
-    auto_profiles = profiles if options.mode == "auto_detect" else {}
+    profile_modes = {CANDIDATE_MODE_AUTO_DETECT, CANDIDATE_MODE_PROFILE_THEN_RANGE}
+    auto_profiles = profiles if options.mode in profile_modes else {}
     language_mode = normalize_language_mode(options.language_mode, options.include_languages)
     processes = options.processes if options.processes and options.processes > 0 else os.cpu_count() or 1
     processes = max(1, processes)
@@ -108,14 +115,15 @@ def discover_suffixes(
             return result
 
         group_mode, incremental_group, profile_baseline_group = _group_scan_mode(group, baseline_groups)
-        if profile_baseline_group:
+        seed_profile_baseline = profile_baseline_group and options.mode != CANDIDATE_MODE_PROFILE_THEN_RANGE
+        if seed_profile_baseline:
             _seed_profile_baseline_versions(max_versions_by_group, group.group_key, profile_baseline_versions)
         _report_group_start(
             group,
             group_index,
             len(pak_groups),
             group_mode,
-            profile_baseline_group,
+            seed_profile_baseline,
             profile_baseline_versions,
             progress,
         )
@@ -183,7 +191,7 @@ def discover_suffixes(
                         extension=extension,
                         entries=entries,
                         plan=plan,
-                        known_profile_text=describe_auto_profile(extension, auto_profiles),
+                        known_profile_text=_describe_profile_plan(extension, options.mode, auto_profiles),
                         group_hashes=group.hashes,
                         options=options,
                         profiles=profiles,
@@ -217,7 +225,7 @@ def discover_suffixes(
                     entries=entries,
                     plan=plan,
                     total_candidates=group_plan.candidate_counts_by_extension[extension],
-                    known_profile_text=describe_auto_profile(extension, auto_profiles),
+                    known_profile_text=_describe_profile_plan(extension, options.mode, auto_profiles),
                     options=options,
                     language_mode=language_mode,
                     processes=processes,
@@ -270,6 +278,12 @@ def _group_scan_mode(group: PakHashGroup, baseline_groups: set[str]) -> tuple[st
     if not has_baseline_group:
         baseline_groups.add(group.group_key)
     return "full", False, False
+
+
+def _describe_profile_plan(extension: str, mode: str, profiles: dict[str, dict]) -> str:
+    if mode == CANDIDATE_MODE_PROFILE_THEN_RANGE:
+        return describe_profile_then_range(extension, profiles)
+    return describe_auto_profile(extension, profiles)
 
 
 def _profile_baseline_versions(
@@ -372,8 +386,8 @@ def _search_extension_gpu(
     found_versions: set[int],
     gpu_devices: list[int],
 ) -> _GpuOutcome:
-    if options.mode == "auto_detect" and progress:
-        progress(f".{extension}: auto_detect using {known_profile_text}.")
+    if options.mode in {CANDIDATE_MODE_AUTO_DETECT, CANDIDATE_MODE_PROFILE_THEN_RANGE} and progress:
+        progress(f".{extension}: {options.mode} using {known_profile_text}.")
     devices = gpu_devices or [0]
     producers_per_device = _gpu_producers_per_device(options)
     prefetch_batches_per_device = max(0, int(options.gpu_prefetch_batches_per_device or 0))
@@ -509,8 +523,8 @@ def _search_extension_cpu(
     progress: ProgressCallback | None,
     found_versions: set[int],
 ) -> None:
-    if options.mode == "auto_detect" and progress:
-        progress(f".{extension}: auto_detect using {known_profile_text}.")
+    if options.mode in {CANDIDATE_MODE_AUTO_DETECT, CANDIDATE_MODE_PROFILE_THEN_RANGE} and progress:
+        progress(f".{extension}: {options.mode} using {known_profile_text}.")
     if progress:
         progress(
             f"Suffix discovery .{extension}: {len(entries)} raw paths x {plan.count} versions "
