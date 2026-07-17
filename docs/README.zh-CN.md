@@ -158,6 +158,8 @@ natives/STM/<raw_path>.<version>.STM
 
 候选生成会结合 profile 和 DMP 中的路径证据。Step 1 会为每个 raw path 记录它是否来自 `streaming/` 路径，以及是否已经带有 `.STM`、`.X64` 这类平台尾缀。对已选中的扩展名，Step 2 会同时使用已带版本和未带版本 raw path 作为证据，并利用这些信息减少不必要的路径变体。
 
+由于 DMP 中可能包含已被覆盖或不完整的内存字符串，Step 1 只接受结束于可信 UTF-16 文本边界的路径。数字后缀后面直接连接二进制数据时，该残片会被忽略并输出警告，不会写入 `suffix_map`。
+
 ## 候选模式
 
 `Candidate mode` 只控制 Step 2 如何生成 `<raw_path>.<version>` 里的候选版本号列表。路径变体由 `Platform suffixes`、`Languages`、`Streaming variants` 分别控制。

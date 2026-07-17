@@ -16,6 +16,7 @@ class DmpScanResult:
     unversioned_paths: PathCounts = field(default_factory=dict)
     versioned_paths: PathCounts = field(default_factory=dict)
     scanned_bytes: int = 0
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def detected_extension_count(self) -> int:
@@ -40,6 +41,7 @@ class DmpScanResult:
     def merge(self, other: "DmpScanResult") -> None:
         self.dmp_files.extend(other.dmp_files)
         self.scanned_bytes += other.scanned_bytes
+        self.warnings.extend(other.warnings)
         for ext, versions in other.suffix_counts.items():
             self.suffix_counts.setdefault(ext, Counter()).update(versions)
         for ext, paths in other.unversioned_paths.items():

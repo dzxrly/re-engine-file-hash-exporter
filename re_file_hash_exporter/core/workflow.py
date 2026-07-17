@@ -31,6 +31,8 @@ class ExportWorkflow:
         write_config(output_path, self.suffix_counts)
         report_path = write_missing_report(output_path, scan)
         if progress:
+            for warning in scan.warnings:
+                progress(f"Warning: {warning}")
             progress(f"Wrote config: {output_path}")
             progress(f"Wrote missing report: {report_path}")
         return scan

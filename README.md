@@ -158,6 +158,8 @@ The tool computes the RE Engine mixed UTF-16 hash for each candidate and compare
 
 Candidate generation is profile-guided. Step 1 keeps light path evidence for each raw path, including whether the DMP reference was seen under `streaming/` and whether a platform tail such as `.STM` or `.X64` was already present. Step 2 uses both versioned and unversioned raw paths for selected extensions, together with `file_suffix_profiles.json`, to avoid unnecessary path variants.
 
+Because a DMP can contain overwritten or incomplete memory strings, Step 1 accepts a path only when it ends at a trustworthy UTF-16 text boundary. Numeric suffix fragments followed directly by binary data are ignored and reported as warnings instead of being written to `suffix_map`.
+
 ## Candidate Modes
 
 `Candidate mode` controls only how Step 2 builds the candidate version-number list used in `<raw_path>.<version>`. Path variants are controlled separately by `Platform suffixes`, `Languages`, and `Streaming variants`.
